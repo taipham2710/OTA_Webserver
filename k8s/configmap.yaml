@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ota-config
+data:
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_BUCKET: "firmware"
+  INFLUX_URL: "http://influxdb:8086"
+  INFLUX_ORG: "iot-org"
+  INFLUX_BUCKET: "metrics"
+  MONGO_DB: "ota"
+  ES_ENDPOINT: "http://elasticsearch:9200"
+  INFERENCE_API: "http://inference-service:8000"

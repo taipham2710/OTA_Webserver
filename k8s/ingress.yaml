@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ota-webserver-ingress
+  labels:
+    app: ota-webserver
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - ota.example.com
+    secretName: ota-webserver-tls
+  rules:
+  - host: ota.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ota-webserver
+            port:
+              number: 80
+
