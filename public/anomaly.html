@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anomaly Analysis</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-8">
+        <div class="mb-4">
+            <a href="/" class="text-blue-600 hover:underline">← Back to Dashboard</a>
+        </div>
+        <h1 class="text-3xl font-bold mb-6">Anomaly Analysis</h1>
+        
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <form id="queryForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">Device ID</label>
+                    <input type="text" id="deviceId" name="deviceId" placeholder="Enter device ID" required
+                        class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+                <button type="submit" 
+                    class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                    Analyze Anomalies
+                </button>
+            </form>
+        </div>
+
+        <div id="result" class="hidden bg-white rounded-lg shadow p-6">
+            <h2 class="text-xl font-semibold mb-4">Analysis Result</h2>
+            <div id="resultContent" class="space-y-4">
+                <pre class="bg-gray-100 p-4 rounded text-sm overflow-auto"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('queryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const deviceId = document.getElementById('deviceId').value.trim();
+
+            if (!deviceId) {
+                alert('Please enter a device ID');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/anomaly/${encodeURIComponent(deviceId)}`);
+                const data = await response.json();
+                const resultDiv = document.getElementById('result');
+                const resultContent = document.getElementById('resultContent');
+
+                if (response.ok && data.success && data.data) {
+                    const result = data.data;
+                    const score = result.score !== undefined ? result.score : result.anomaly_score;
+                    const threshold = result.threshold !== undefined ? result.threshold : 0.5;
+                    const isAnomaly = score !== undefined && threshold !== undefined ? score > threshold : null;
+                    
+                    resultContent.innerHTML = `
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="p-4 bg-gray-50 rounded">
+                                    <div class="text-sm text-gray-600">Model Score</div>
+                                    <div class="text-2xl font-bold ${isAnomaly ? 'text-red-600' : 'text-green-600'}">${score !== undefined ? score.toFixed(4) : 'N/A'}</div>
+                                </div>
+                                <div class="p-4 bg-gray-50 rounded">
+                                    <div class="text-sm text-gray-600">Threshold</div>
+                                    <div class="text-2xl font-bold">${threshold !== undefined ? threshold.toFixed(4) : 'N/A'}</div>
+                                </div>
+                            </div>
+                            <div class="p-4 ${isAnomaly ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'} rounded">
+                                <div class="font-semibold mb-2">Recommendation</div>
+                                <div>${isAnomaly ? '⚠️ Anomaly detected. Device behavior is outside normal parameters.' : '✓ Device behavior is normal.'}</div>
+                            </div>
+                            <details class="mt-4">
+                                <summary class="cursor-pointer text-sm text-gray-600">View raw data</summary>
+                                <pre class="bg-gray-100 p-4 rounded text-xs overflow-auto mt-2">${JSON.stringify(result, null, 2)}</pre>
+                            </details>
+                        </div>
+                    `;
+                    resultDiv.classList.remove('hidden');
+                } else {
+                    const errorMsg = data.message || data.error?.message || 'Analysis failed';
+                    resultContent.innerHTML = `<div class="text-red-600">Error: ${errorMsg}</div>`;
+                    resultDiv.classList.remove('hidden');
+                }
+            } catch (error) {
+                document.getElementById('resultContent').innerHTML = 
+                    `<div class="text-red-600">Error: ${error.message}</div>`;
+                document.getElementById('result').classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
+

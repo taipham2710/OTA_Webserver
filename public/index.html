@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OTA Webserver - Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-white text-gray-900">
+    <!-- Sidebar -->
+    <aside class="fixed left-0 top-0 h-screen w-60 bg-white border-r border-gray-200 z-50">
+        <div class="p-6">
+            <h1 class="text-xl font-bold text-gray-900 mb-8">OTA Dashboard</h1>
+            <nav class="space-y-2">
+                <a href="/" class="block px-4 py-2 rounded-lg bg-blue-50 text-blue-600 font-semibold">Dashboard</a>
+                <a href="/devices.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Devices</a>
+                <a href="/firmware.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Firmware</a>
+                <a href="/model.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Model</a>
+                <a href="/logs.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Logs</a>
+                <a href="/metrics.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Metrics</a>
+                <a href="/anomaly.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Anomaly</a>
+            </nav>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="ml-60 p-6">
+        <h2 class="text-2xl font-bold mb-8 text-gray-900">Dashboard</h2>
+        
+        <!-- Device Statistics -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div class="text-sm text-gray-600 mb-1">Total Devices</div>
+                <div class="text-3xl font-bold text-gray-900" id="statTotal">-</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div class="text-sm text-gray-600 mb-1">Normal</div>
+                <div class="text-3xl font-bold text-green-600" id="statNormal">-</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div class="text-sm text-gray-600 mb-1">Anomaly</div>
+                <div class="text-3xl font-bold text-red-600" id="statAnomaly">-</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div class="text-sm text-gray-600 mb-1">Warning</div>
+                <div class="text-3xl font-bold text-yellow-600" id="statWarning">-</div>
+            </div>
+        </div>
+
+        <!-- Top Drifting Features -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4 text-gray-900">Top Drifting Features</h3>
+            <div id="driftFeatures" class="flex flex-wrap gap-2">
+                <div class="text-gray-500">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Quick Links -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <a href="/devices.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
+                <h3 class="text-xl font-semibold mb-2 text-gray-900">Device Overview</h3>
+                <p class="text-gray-600">View and manage IoT devices</p>
+            </a>
+            <a href="/firmware.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
+                <h3 class="text-xl font-semibold mb-2 text-gray-900">Firmware Management</h3>
+                <p class="text-gray-600">Upload and assign firmware</p>
+            </a>
+            <a href="/model.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
+                <h3 class="text-xl font-semibold mb-2 text-gray-900">Model Information</h3>
+                <p class="text-gray-600">View ML model metrics and features</p>
+            </a>
+            <a href="/logs.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
+                <h3 class="text-xl font-semibold mb-2 text-gray-900">Logs Viewer</h3>
+                <p class="text-gray-600">Query logs from Elasticsearch</p>
+            </a>
+            <a href="/metrics.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
+                <h3 class="text-xl font-semibold mb-2 text-gray-900">Metrics Chart</h3>
+                <p class="text-gray-600">View time-series metrics</p>
+            </a>
+            <a href="/anomaly.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
+                <h3 class="text-xl font-semibold mb-2 text-gray-900">Anomaly Analysis</h3>
+                <p class="text-gray-600">Analyze device anomalies</p>
+            </a>
+        </div>
+    </div>
+
+    <script type="module">
+        import { api } from './js/api.js';
+
+        async function loadStatistics() {
+            try {
+                const statsData = await api.devices.stats();
+                const stats = statsData.data || {};
+                
+                document.getElementById('statTotal').textContent = stats.total || 0;
+                document.getElementById('statNormal').textContent = stats.normal || 0;
+                document.getElementById('statAnomaly').textContent = stats.anomaly || 0;
+                document.getElementById('statWarning').textContent = stats.warning || 0;
+            } catch (error) {
+                console.error('Error loading statistics:', error);
+            }
+        }
+
+        async function loadDriftFeatures() {
+            try {
+                const modelData = await api.model.info();
+                const model = modelData.data || {};
+                const driftFeatures = model.drift_features || [];
+                
+                if (driftFeatures.length === 0) {
+                    document.getElementById('driftFeatures').innerHTML = 
+                        '<span class="text-gray-500 text-sm">No drift detected</span>';
+                } else {
+                    const topFeatures = driftFeatures.slice(0, 5);
+                    document.getElementById('driftFeatures').innerHTML = topFeatures.map(feature => 
+                        `<span class="px-3 py-1 bg-red-50 border border-red-500 rounded text-red-700 text-sm">${feature}</span>`
+                    ).join('');
+                }
+            } catch (error) {
+                console.error('Error loading drift features:', error);
+                document.getElementById('driftFeatures').innerHTML = 
+                    '<span class="text-gray-500 text-sm">Unable to load drift features</span>';
+            }
+        }
+
+        // Load data
+        loadStatistics();
+        loadDriftFeatures();
+
+        // Auto-refresh every 30s
+        setInterval(() => {
+            loadStatistics();
+            loadDriftFeatures();
+        }, 30000);
+    </script>
+</body>
+</html>

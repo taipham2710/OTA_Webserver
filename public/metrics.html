@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metrics Chart</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-8">
+        <div class="mb-4">
+            <a href="/" class="text-blue-600 hover:underline">← Back to Dashboard</a>
+        </div>
+        <h1 class="text-3xl font-bold mb-6">Metrics Chart</h1>
+        
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <form id="queryForm" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Device ID</label>
+                        <input type="text" id="deviceId" name="deviceId" placeholder="Optional"
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Measurement</label>
+                        <input type="text" id="measurement" name="measurement" value="sensor_data"
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Limit</label>
+                        <input type="number" id="limit" name="limit" value="100" min="1" max="1000"
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Start Date</label>
+                        <input type="datetime-local" id="start" name="start"
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">End Date</label>
+                        <input type="datetime-local" id="end" name="end"
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                </div>
+                <button type="submit" 
+                    class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                    Query Metrics
+                </button>
+            </form>
+        </div>
+
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Metrics Chart</h2>
+                <label class="flex items-center space-x-2">
+                    <input type="checkbox" id="autoRefresh" class="rounded">
+                    <span class="text-sm">Auto-refresh (30s)</span>
+                </label>
+            </div>
+            <canvas id="metricsChart" height="100"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let refreshInterval = null;
+
+        document.getElementById('queryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const params = new URLSearchParams();
+            
+            if (formData.get('deviceId')) params.append('deviceId', formData.get('deviceId'));
+            if (formData.get('measurement')) params.append('measurement', formData.get('measurement'));
+            if (formData.get('limit')) params.append('limit', formData.get('limit'));
+            if (formData.get('start')) params.append('start', new Date(formData.get('start')).toISOString());
+            if (formData.get('end')) params.append('end', new Date(formData.get('end')).toISOString());
+
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+
+            await queryMetrics(params);
+        });
+
+        document.getElementById('autoRefresh').addEventListener('change', (e) => {
+            if (e.target.checked) {
+                refreshInterval = setInterval(async () => {
+                    const formData = new FormData(document.getElementById('queryForm'));
+                    const params = new URLSearchParams();
+                    if (formData.get('deviceId')) params.append('deviceId', formData.get('deviceId'));
+                    if (formData.get('measurement')) params.append('measurement', formData.get('measurement'));
+                    if (formData.get('limit')) params.append('limit', formData.get('limit'));
+                    if (formData.get('start')) params.append('start', new Date(formData.get('start')).toISOString());
+                    if (formData.get('end')) params.append('end', new Date(formData.get('end')).toISOString());
+                    await queryMetrics(params);
+                }, 30000);
+            } else {
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            }
+        });
+
+        const queryMetrics = async (params) => {
+            try {
+                const response = await fetch(`/api/metrics?${params.toString()}`);
+                const data = await response.json();
+
+                if (response.ok && data.data) {
+                    const metrics = data.data;
+                    const groupedByField = {};
+                    
+                    metrics.forEach(metric => {
+                        if (!groupedByField[metric.field]) {
+                            groupedByField[metric.field] = [];
+                        }
+                        groupedByField[metric.field].push({
+                            x: new Date(metric.time).getTime(),
+                            y: metric.value
+                        });
+                    });
+
+                    const datasets = Object.keys(groupedByField).map((field, index) => ({
+                        label: field,
+                        data: groupedByField[field].sort((a, b) => a.x - b.x),
+                        borderColor: `hsl(${index * 60}, 70%, 50%)`,
+                        backgroundColor: `hsla(${index * 60}, 70%, 50%, 0.1)`,
+                        tension: 0.1
+                    }));
+
+                    const ctx = document.getElementById('metricsChart').getContext('2d');
+                    
+                    if (chart) {
+                        chart.destroy();
+                    }
+
+                    chart = new Chart(ctx, {
+                        type: 'line',
+                        data: { datasets },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                x: {
+                                    type: 'linear',
+                                    ticks: {
+                                        callback: function(value) {
+                                            return new Date(value).toLocaleTimeString();
+                                        }
+                                    }
+                                },
+                                y: {
+                                    beginAtZero: false
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    const errorMsg = data.message || data.error?.message || 'Failed to fetch metrics';
+                    alert(`Error: ${errorMsg}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message || 'Network error occurred'}`);
+            }
+        });
+    </script>
+</body>
+</html>
+

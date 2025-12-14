@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Detail - OTA Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body class="bg-white text-gray-900">
+    <!-- Sidebar -->
+    <aside class="fixed left-0 top-0 h-screen w-60 bg-white border-r border-gray-200 z-50">
+        <div class="p-6">
+            <h1 class="text-xl font-bold text-gray-900 mb-8">OTA Dashboard</h1>
+            <nav class="space-y-2">
+                <a href="/" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Dashboard</a>
+                <a href="/devices.html" class="block px-4 py-2 rounded-lg bg-blue-50 text-blue-600 font-semibold">Devices</a>
+                <a href="/firmware.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Firmware</a>
+                <a href="/model.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Model</a>
+                <a href="/logs.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Logs</a>
+                <a href="/metrics.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Metrics</a>
+                <a href="/anomaly.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Anomaly</a>
+            </nav>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="ml-60 p-6">
+        <div id="deviceInfo" class="mb-6">
+            <div class="flex items-center justify-center p-8">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            </div>
+        </div>
+
+        <div class="border-b border-gray-200 mb-6 overflow-x-auto">
+            <nav class="flex space-x-8 min-w-max">
+                <button onclick="showTab('info')" id="tab-info" class="tab-button py-4 px-1 border-b-2 border-blue-500 font-medium text-sm text-gray-900 whitespace-nowrap">Info</button>
+                <button onclick="showTab('metrics')" id="tab-metrics" class="tab-button py-4 px-1 border-b-2 border-transparent text-gray-600 hover:text-gray-900 text-sm whitespace-nowrap">Metrics</button>
+                <button onclick="showTab('logs')" id="tab-logs" class="tab-button py-4 px-1 border-b-2 border-transparent text-gray-600 hover:text-gray-900 text-sm whitespace-nowrap">Logs</button>
+                <button onclick="showTab('ota')" id="tab-ota" class="tab-button py-4 px-1 border-b-2 border-transparent text-gray-600 hover:text-gray-900 text-sm whitespace-nowrap">OTA History</button>
+                <button onclick="showTab('anomaly')" id="tab-anomaly" class="tab-button py-4 px-1 border-b-2 border-transparent text-gray-600 hover:text-gray-900 text-sm whitespace-nowrap">Anomaly Timeline</button>
+            </nav>
+        </div>
+
+        <div id="tab-content">
+            <div id="content-info" class="tab-content">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div id="infoContent">Loading...</div>
+                </div>
+            </div>
+
+            <div id="content-metrics" class="tab-content hidden">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div class="h-96">
+                        <canvas id="metricsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div id="content-logs" class="tab-content hidden">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div id="logsContent">Loading...</div>
+                </div>
+            </div>
+
+            <div id="content-ota" class="tab-content hidden">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div id="otaContent">Loading...</div>
+                </div>
+            </div>
+
+            <div id="content-anomaly" class="tab-content hidden">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div id="anomalyContent">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { api } from './js/api.js';
+        import { realtime } from './js/realtime.js';
+        import { charts } from './js/charts.js';
+        import { ui } from './js/ui.js';
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const deviceId = urlParams.get('device_id');
+
+        if (!deviceId) {
+            window.location.href = '/devices.html';
+        }
+
+        let currentTab = 'info';
+        let metricsChart = null;
+
+        window.showTab = function(tab) {
+            currentTab = tab;
+            
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('border-blue-500', 'font-medium', 'text-gray-900');
+                btn.classList.add('border-transparent', 'text-gray-600');
+            });
+            document.getElementById(`tab-${tab}`).classList.add('border-blue-500', 'font-medium', 'text-gray-900');
+            document.getElementById(`tab-${tab}`).classList.remove('text-gray-600');
+
+            // Show/hide content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            document.getElementById(`content-${tab}`).classList.remove('hidden');
+
+            // Load tab data
+            loadTabData(tab);
+        };
+
+        async function loadDeviceInfo() {
+            try {
+                const data = await api.devices.get(deviceId);
+                const device = data.data;
+
+                document.getElementById('deviceInfo').innerHTML = `
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <h2 class="text-xl font-bold mb-4 text-gray-900">${device.deviceId || device.id}</h2>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div>
+                                <div class="text-sm text-gray-600">Type</div>
+                                <div class="font-medium text-gray-900">${device.deviceType || 'N/A'}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">Status</div>
+                                <div><span class="px-2 py-1 rounded text-xs ${ui.getStatusColor(device.status)}">${device.status || 'unknown'}</span></div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">Firmware</div>
+                                <div class="font-medium text-gray-900">${device.firmwareVersion || 'N/A'}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">OTA Status</div>
+                                <div><span class="px-2 py-1 rounded text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">${device.otaStatus || 'N/A'}</span></div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">Anomaly Score</div>
+                                <div class="${device.isAnomaly ? 'text-red-600' : 'text-green-600'}">${device.anomalyScore !== null ? device.anomalyScore.toFixed(3) : 'N/A'}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">Reported FW</div>
+                                <div class="font-medium text-gray-900">${device.reportedFirmwareVersion || 'N/A'}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-600">Last Seen</div>
+                                <div class="font-medium text-gray-900">${ui.formatDate(device.lastSeenAt || device.lastCheckin || device.lastSeen)}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                if (currentTab === 'info') {
+                    loadInfoTab(device);
+                }
+            } catch (error) {
+                document.getElementById('deviceInfo').innerHTML = 
+                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function loadInfoTab(device) {
+            document.getElementById('infoContent').innerHTML = `
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <div class="text-sm text-gray-600">Device ID</div>
+                            <div class="font-medium text-gray-900">${device.deviceId || device.id}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Device Type</div>
+                            <div class="font-medium text-gray-900">${device.deviceType || 'N/A'}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Firmware Version</div>
+                            <div class="font-medium text-gray-900">${device.firmwareVersion || 'N/A'}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Reported FW Version</div>
+                            <div class="font-medium text-gray-900">${device.reportedFirmwareVersion || 'N/A'}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Status</div>
+                            <div><span class="px-2 py-1 rounded text-xs ${ui.getStatusColor(device.status)}">${device.status || 'unknown'}</span></div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">OTA Status</div>
+                            <div><span class="px-2 py-1 rounded text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">${device.otaStatus || 'N/A'}</span></div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Last Seen</div>
+                            <div class="font-medium text-gray-900">${ui.formatDate(device.lastSeenAt || device.lastCheckin || device.lastSeen)}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Log Count</div>
+                            <div class="font-medium text-gray-900">${device.logCount || 0}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm text-gray-600">Metric Count</div>
+                            <div class="font-medium text-gray-900">${device.metricCount || 0}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadTabData(tab) {
+            if (tab === 'info') {
+                const data = await api.devices.get(deviceId);
+                loadInfoTab(data.data);
+            } else if (tab === 'metrics') {
+                await loadMetrics();
+            } else if (tab === 'logs') {
+                await loadLogs();
+            } else if (tab === 'ota') {
+                await loadOTAHistory();
+            } else if (tab === 'anomaly') {
+                await loadAnomaly();
+            }
+        }
+
+        async function loadMetrics() {
+            try {
+                const data = await api.metrics.list({ deviceId, limit: 200 });
+                const metrics = data.data || [];
+
+                if (metrics.length === 0) {
+                    document.getElementById('content-metrics').innerHTML = 
+                        '<div class="p-8 text-center text-gray-500">No metrics data available</div>';
+                    return;
+                }
+
+                // Group metrics by field name
+                const grouped = {};
+                metrics.forEach(m => {
+                    const fieldName = m.field || m._field || 'unknown';
+                    if (!grouped[fieldName]) grouped[fieldName] = [];
+                    grouped[fieldName].push({
+                        x: new Date(m.time || m._time).getTime(),
+                        y: m.value || m._value || 0,
+                    });
+                });
+
+                // Priority fields to show (RSSI, CPU, Memory, Packet loss, Temperature)
+                const priorityFields = ['RSSI', 'rssi', 'CPU', 'cpu', 'Memory', 'memory', 'RAM', 'ram', 'packet_loss', 'temperature', 'temp'];
+                const fieldOrder = [...priorityFields, ...Object.keys(grouped).filter(f => !priorityFields.includes(f))];
+                
+                const datasets = fieldOrder
+                    .filter(field => grouped[field])
+                    .map((field, i) => {
+                        const sortedData = grouped[field].sort((a, b) => a.x - b.x);
+                        return {
+                            label: field,
+                            data: sortedData,
+                            borderColor: `hsl(${i * 60 % 360}, 70%, 50%)`,
+                            backgroundColor: `hsla(${i * 60 % 360}, 70%, 50%, 0.1)`,
+                            tension: 0.1,
+                            borderWidth: 2,
+                        };
+                    });
+
+                if (metricsChart) {
+                    charts.destroy('metricsChart');
+                }
+
+                metricsChart = charts.create('metricsChart', {
+                    type: 'line',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        plugins: { 
+                            legend: { 
+                                labels: { color: '#111827' },
+                                position: 'top',
+                            } 
+                        },
+                        scales: {
+                            x: { 
+                                type: 'linear',
+                                ticks: { 
+                                    color: '#6b7280',
+                                    callback: function(value) {
+                                        return new Date(value).toLocaleTimeString();
+                                    }
+                                }, 
+                                grid: { color: '#e5e7eb' } 
+                            },
+                            y: { 
+                                ticks: { color: '#6b7280' }, 
+                                grid: { color: '#e5e7eb' } 
+                            },
+                        },
+                    },
+                });
+            } catch (error) {
+                document.getElementById('content-metrics').innerHTML = 
+                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function loadLogs() {
+            try {
+                const data = await api.logs.list({ deviceId, limit: 50 });
+                const logs = data.data || [];
+
+                document.getElementById('logsContent').innerHTML = `
+                    <div class="space-y-2">
+                        ${logs.map(log => `
+                            <div class="p-3 bg-gray-50 rounded text-sm border border-gray-200">
+                                <div class="flex justify-between">
+                                    <span class="text-gray-600">${ui.formatDate(log.timestamp)}</span>
+                                    <span class="px-2 py-1 rounded text-xs ${log.level === 'ERROR' ? 'bg-red-100 text-red-800' : log.level === 'WARN' ? 'bg-yellow-100 text-yellow-800' : 'bg-blue-100 text-blue-800'}">${log.level}</span>
+                                </div>
+                                <div class="mt-1 text-gray-900">${log.message || log.log || 'N/A'}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('logsContent').innerHTML = 
+                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function loadOTAHistory() {
+            try {
+                const data = await api.ota.history(deviceId);
+                const history = data.data || [];
+
+                document.getElementById('otaContent').innerHTML = `
+                    <div class="space-y-3">
+                        ${history.map(item => `
+                            <div class="p-4 bg-gray-50 rounded border border-gray-200">
+                                <div class="flex justify-between items-center">
+                                    <div>
+                                        <div class="font-medium text-gray-900">${item.firmwareVersion}</div>
+                                        <div class="text-sm text-gray-600">${ui.formatDate(item.deployedAt)}</div>
+                                    </div>
+                                    <span class="px-2 py-1 rounded text-xs ${ui.getStatusColor(item.status)}">${item.status}</span>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('otaContent').innerHTML = 
+                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function loadAnomaly() {
+            try {
+                const data = await api.anomaly.get(deviceId);
+                const anomaly = data.data || {};
+                const score = anomaly.score || anomaly.anomaly_score || null;
+                const threshold = anomaly.threshold || 0.5;
+                const isAnomaly = score !== null ? score > threshold : null;
+
+                // Get historical anomaly data from logs/metrics for timeline
+                let timelineData = [];
+                try {
+                    const logsData = await api.logs.list({ deviceId, limit: 100 });
+                    const logs = logsData.data || [];
+                    
+                    // Extract anomaly-related logs
+                    timelineData = logs
+                        .filter(log => log.level === 'ERROR' || log.message?.toLowerCase().includes('anomaly'))
+                        .slice(0, 20)
+                        .map(log => ({
+                            time: log.timestamp,
+                            type: log.level,
+                            message: log.message || log.log || 'N/A'
+                        }));
+                } catch (err) {
+                    console.warn('Could not load timeline data:', err);
+                }
+
+                document.getElementById('anomalyContent').innerHTML = `
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="p-4 bg-gray-50 rounded border border-gray-200">
+                                <div class="text-sm text-gray-600">Current Score</div>
+                                <div class="text-2xl font-bold ${isAnomaly ? 'text-red-600' : isAnomaly === false ? 'text-green-600' : 'text-gray-500'}">${score !== null ? score.toFixed(4) : 'N/A'}</div>
+                            </div>
+                            <div class="p-4 bg-gray-50 rounded border border-gray-200">
+                                <div class="text-sm text-gray-600">Threshold</div>
+                                <div class="text-2xl font-bold text-gray-900">${threshold.toFixed(4)}</div>
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded border border-gray-200">
+                            <div class="text-sm text-gray-600 mb-2">Status</div>
+                            <div class="text-lg font-semibold ${isAnomaly ? 'text-red-600' : isAnomaly === false ? 'text-green-600' : 'text-gray-500'}">
+                                ${isAnomaly ? '⚠️ Anomaly Detected' : isAnomaly === false ? '✓ Normal' : 'Unknown'}
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded border border-gray-200">
+                            <div class="text-sm text-gray-600 mb-2">Explanation</div>
+                            <div class="text-gray-900">${anomaly.explanation || anomaly.message || 'No explanation available'}</div>
+                        </div>
+                        <div class="p-4 bg-white rounded border border-gray-200">
+                            <h4 class="text-sm font-semibold text-gray-900 mb-3">Anomaly Timeline</h4>
+                            <div class="space-y-2 max-h-96 overflow-y-auto">
+                                ${timelineData.length > 0 
+                                    ? timelineData.map(item => `
+                                        <div class="p-3 bg-gray-50 rounded text-sm border border-gray-200">
+                                            <div class="flex justify-between items-start mb-1">
+                                                <span class="text-gray-600">${ui.formatDate(item.time)}</span>
+                                                <span class="px-2 py-1 rounded text-xs ${item.type === 'ERROR' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}">${item.type}</span>
+                                            </div>
+                                            <div class="text-gray-900">${item.message}</div>
+                                        </div>
+                                    `).join('')
+                                    : '<div class="text-gray-500 text-sm text-center py-4">No anomaly events in timeline</div>'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('anomalyContent').innerHTML = 
+                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+            }
+        }
+
+        // WebSocket updates
+        const socket = realtime.connect();
+        if (socket && realtime.isConnected()) {
+            realtime.subscribeDevice(deviceId);
+            
+            realtime.on('logs', (data) => {
+                if (data.device_id === deviceId && currentTab === 'logs') {
+                    loadLogs();
+                }
+            });
+
+            realtime.on('metrics', (data) => {
+                if (data.device_id === deviceId && currentTab === 'metrics') {
+                    // Update chart with new data point
+                    const chart = charts.getInstance('metricsChart');
+                    if (chart && data.field && data.value !== undefined) {
+                        const dataset = chart.data.datasets.find(ds => ds.label === data.field);
+                        if (dataset) {
+                            const timestamp = new Date(data.time || Date.now()).getTime();
+                            dataset.data.push({ x: timestamp, y: data.value });
+                            // Keep only last 100 points
+                            if (dataset.data.length > 100) {
+                                dataset.data.shift();
+                            }
+                            chart.update('none'); // 'none' for smooth update
+                        } else {
+                            // New field, reload chart
+                            loadMetrics();
+                        }
+                    } else {
+                        loadMetrics();
+                    }
+                }
+            });
+
+            realtime.on('ota_progress', (data) => {
+                if (data.device_id === deviceId && currentTab === 'ota') {
+                    loadOTAHistory();
+                }
+            });
+
+            realtime.on('anomaly', (data) => {
+                if (data.device_id === deviceId && currentTab === 'anomaly') {
+                    loadAnomaly();
+                }
+            });
+
+            realtime.on('device:update', (data) => {
+                if (data.deviceId === deviceId) {
+                    loadDeviceInfo();
+                }
+            });
+        } else if (realtime.isPollingFallback()) {
+            // Fallback to polling if WebSocket unavailable
+            setInterval(() => {
+                if (currentTab === 'metrics') loadMetrics();
+                if (currentTab === 'logs') loadLogs();
+                if (currentTab === 'ota') loadOTAHistory();
+                if (currentTab === 'anomaly') loadAnomaly();
+            }, 5000);
+        }
+
+        // Initial load
+        loadDeviceInfo();
+    </script>
+</body>
+</html>

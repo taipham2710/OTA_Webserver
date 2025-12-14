@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Monitoring - OTA Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-white text-gray-900">
+    <!-- Sidebar -->
+    <aside class="fixed left-0 top-0 h-screen w-60 bg-white border-r border-gray-200 z-50">
+        <div class="p-6">
+            <h1 class="text-xl font-bold text-gray-900 mb-8">OTA Dashboard</h1>
+            <nav class="space-y-2">
+                <a href="/" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Dashboard</a>
+                <a href="/devices.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Devices</a>
+                <a href="/firmware.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Firmware</a>
+                <a href="/model.html" class="block px-4 py-2 rounded-lg bg-blue-50 text-blue-600 font-semibold">Model</a>
+                <a href="/logs.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Logs</a>
+                <a href="/metrics.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Metrics</a>
+                <a href="/anomaly.html" class="block px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-50">Anomaly</a>
+            </nav>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="ml-60 p-6">
+        <div id="modelCard" class="mb-6">
+            <div class="flex items-center justify-center p-8">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { modelUI } from './js/model.js';
+        import { charts } from './js/charts.js';
+
+        // Initial load
+        await modelUI.load();
+
+        // Auto-refresh every 30s
+        modelUI.startAutoRefresh(30000);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            modelUI.stopAutoRefresh();
+            charts.destroy('featureImportanceChart');
+        });
+    </script>
+</body>
+</html>
