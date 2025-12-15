@@ -1,6 +1,56 @@
 import { getElasticsearchClient } from '../clients/elasticsearch.js';
 import { AppError } from '../utils/errors.js';
 
+const getDailyIndexName = (date) => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `logs-iot-${year}.${month}.${day}`;
+};
+
+export const ingestLog = async (logData) => {
+  try {
+    const client = getElasticsearchClient();
+
+    if (!logData.deviceId || typeof logData.deviceId !== 'string') {
+      throw new AppError('deviceId is required', 400);
+    }
+
+    if (!logData.message || typeof logData.message !== 'string') {
+      throw new AppError('message is required', 400);
+    }
+
+    const timestamp = logData.timestamp ? new Date(logData.timestamp) : new Date();
+    const level = logData.level || 'info';
+    const ingestedAt = new Date().toISOString();
+
+    const logDocument = {
+      deviceId: logData.deviceId,
+      level: level.toLowerCase(),
+      message: logData.message,
+      timestamp: timestamp.toISOString(),
+      ingestedAt,
+    };
+
+    const indexName = getDailyIndexName(timestamp);
+
+    const response = await client.index({
+      index: indexName,
+      document: logDocument,
+    });
+
+    return {
+      id: response._id,
+      ...logDocument,
+    };
+  } catch (error) {
+    if (error.statusCode) {
+      throw error;
+    }
+    throw new AppError(`Failed to ingest log: ${error.message}`, 500);
+  }
+};
+
 export const queryLogs = async (queryParams = {}) => {
   try {
     const client = getElasticsearchClient();
@@ -9,11 +59,11 @@ export const queryLogs = async (queryParams = {}) => {
     const must = [];
 
     if (deviceId) {
-      must.push({ match: { device_id: deviceId } });
+      must.push({ match: { deviceId: deviceId } });
     }
 
     if (level) {
-      must.push({ match: { level } });
+      must.push({ match: { level: level.toLowerCase() } });
     }
 
     if (start || end) {
@@ -23,31 +73,31 @@ export const queryLogs = async (queryParams = {}) => {
       must.push({ range: { timestamp: range } });
     }
 
-    const body =
-      must.length > 0
+    const body = {
+      size: limit,
+      query: must.length > 0
         ? {
-            query: {
-              bool: {
-                must,
-              },
+            bool: {
+              must,
             },
-            sort: [{ timestamp: { order: 'desc' } }],
-            size: limit,
           }
         : {
-            query: {
-              match_all: {},
-            },
-            sort: [{ timestamp: { order: 'desc' } }],
-            size: limit,
-          };
+            match_all: {},
+          },
+      sort: [
+        { timestamp: { order: 'desc' } },
+      ],
+    };
 
     const response = await client.search({
-      index: 'logs-*',
+      index: 'logs-iot-*',
       body,
     });
 
-    return response.body.hits.hits.map((hit) => ({
+    // Elasticsearch v8 client returns response.hits.hits directly (not response.body.hits.hits)
+    const hits = response?.hits?.hits ?? [];
+
+    return hits.map((hit) => ({
       id: hit._id,
       ...hit._source,
     }));

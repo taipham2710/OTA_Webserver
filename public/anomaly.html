@@ -53,25 +53,35 @@
 
                 if (response.ok && data.success && data.data) {
                     const result = data.data;
-                    const score = result.score !== undefined ? result.score : result.anomaly_score;
-                    const threshold = result.threshold !== undefined ? result.threshold : 0.5;
-                    const isAnomaly = score !== undefined && threshold !== undefined ? score > threshold : null;
+                    // CRITICAL: Use anomalyScore field, never score field
+                    const score = result.anomalyScore ?? null; // Only use anomalyScore
+                    const threshold = typeof result.threshold === 'number' ? result.threshold : 0.5;
+                    
+                    // CRITICAL: Trust backend isAnomaly flag, don't recompute
+                    let isAnomaly = null;
+                    if (typeof result.isAnomaly === 'boolean') {
+                        // Backend is source of truth
+                        isAnomaly = result.isAnomaly;
+                    } else if (typeof score === 'number' && typeof threshold === 'number') {
+                        // Fallback: only compute if backend flag is missing
+                        isAnomaly = score >= threshold;
+                    }
                     
                     resultContent.innerHTML = `
                         <div class="space-y-4">
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="p-4 bg-gray-50 rounded">
                                     <div class="text-sm text-gray-600">Model Score</div>
-                                    <div class="text-2xl font-bold ${isAnomaly ? 'text-red-600' : 'text-green-600'}">${score !== undefined ? score.toFixed(4) : 'N/A'}</div>
+                                    <div class="text-2xl font-bold ${isAnomaly === true ? 'text-red-600' : isAnomaly === false ? 'text-green-600' : 'text-gray-500'}">${typeof score === 'number' ? score.toFixed(4) : 'N/A'}</div>
                                 </div>
                                 <div class="p-4 bg-gray-50 rounded">
                                     <div class="text-sm text-gray-600">Threshold</div>
-                                    <div class="text-2xl font-bold">${threshold !== undefined ? threshold.toFixed(4) : 'N/A'}</div>
+                                    <div class="text-2xl font-bold">${typeof threshold === 'number' ? threshold.toFixed(4) : 'N/A'}</div>
                                 </div>
                             </div>
-                            <div class="p-4 ${isAnomaly ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'} rounded">
+                            <div class="p-4 ${isAnomaly === true ? 'bg-red-50 border border-red-200' : isAnomaly === false ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'} rounded">
                                 <div class="font-semibold mb-2">Recommendation</div>
-                                <div>${isAnomaly ? '⚠️ Anomaly detected. Device behavior is outside normal parameters.' : '✓ Device behavior is normal.'}</div>
+                                <div>${isAnomaly === true ? 'Anomaly detected. Device behavior is outside normal parameters.' : isAnomaly === false ? 'Device behavior is normal.' : 'Unknown - insufficient data'}</div>
                             </div>
                             <details class="mt-4">
                                 <summary class="cursor-pointer text-sm text-gray-600">View raw data</summary>

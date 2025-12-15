@@ -35,9 +35,8 @@
 
     <script type="module">
         import { modelUI } from './js/model.js';
-        import { charts } from './js/charts.js';
 
-        // Initial load
+        // Initial load on tab open
         await modelUI.load();
 
         // Auto-refresh every 30s
@@ -46,7 +45,6 @@
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             modelUI.stopAutoRefresh();
-            charts.destroy('featureImportanceChart');
         });
     </script>
 </body>

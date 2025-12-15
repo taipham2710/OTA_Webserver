@@ -86,7 +86,7 @@ export const api = {
   },
 
   model: {
-    info: () => api.get('/model'),
+    info: () => api.get('/model/info'),
   },
 };
 

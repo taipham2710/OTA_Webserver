@@ -27,23 +27,56 @@ export const ui = {
   },
 
   getStatusColor(status) {
-    const colors = {
-      online: 'bg-green-500',
-      offline: 'bg-gray-500',
-      error: 'bg-red-500',
-      warning: 'bg-yellow-500',
-      pending: 'bg-blue-500',
-    };
-    return colors[status?.toLowerCase()] || 'bg-gray-500';
+    // Soft, academic-friendly color scheme - text only, no icons
+    const statusLower = status?.toLowerCase() || 'unknown';
+    
+    // Normal / Active / Success → light green
+    if (['online', 'active', 'normal', 'success', 'completed'].includes(statusLower)) {
+      return 'bg-green-100 text-green-800';
+    }
+    
+    // Pending / Updating → light blue
+    if (['pending', 'updating'].includes(statusLower)) {
+      return 'bg-blue-100 text-blue-800';
+    }
+    
+    // Warning → light yellow
+    if (['warning', 'warn'].includes(statusLower)) {
+      return 'bg-yellow-100 text-yellow-800';
+    }
+    
+    // Failed / Error / Anomaly → light red
+    if (['failed', 'error', 'anomaly', 'offline'].includes(statusLower)) {
+      return 'bg-red-100 text-red-800';
+    }
+    
+    // Unknown / N/A → light gray
+    return 'bg-gray-100 text-gray-800';
   },
 
   getOTAStatusColor(otaStatus) {
-    if (!otaStatus) return 'bg-gray-400 text-gray-700';
+    // Soft, academic-friendly color scheme for OTA status
+    if (!otaStatus) return 'bg-gray-100 text-gray-800';
+    
     const status = otaStatus.toLowerCase();
-    if (status === 'pending') return 'bg-yellow-400 text-yellow-900';
-    if (status === 'failed') return 'bg-red-500 text-white';
-    if (status === 'completed') return 'bg-green-500 text-white';
-    return 'bg-gray-400 text-gray-700';
+    
+    // Success / Completed / Idle → light green
+    if (['completed', 'success', 'idle'].includes(status)) {
+      return 'bg-green-100 text-green-800';
+    }
+    
+    // Pending / Updating → light blue
+    if (['pending', 'updating'].includes(status)) {
+      return 'bg-blue-100 text-blue-800';
+    }
+    
+    // Failed / Error → light red
+    if (['failed', 'error'].includes(status)) {
+      return 'bg-red-100 text-red-800';
+    }
+    
+    // Unknown / N/A → light gray
+    return 'bg-gray-100 text-gray-800';
   },
 };
 

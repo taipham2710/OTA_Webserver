@@ -1,8 +1,9 @@
 import express from 'express';
-import { getLogsHandler } from '../controllers/logsController.js';
+import { getLogsHandler, ingestLogsHandler } from '../controllers/logsController.js';
 
 const router = express.Router();
 
+router.post('/', ingestLogsHandler);
 router.get('/', getLogsHandler);
 
 export default router;

@@ -111,7 +111,7 @@
                                 <td class="px-4 py-3 text-sm text-gray-700">${fw.target_device || fw.metadata?.target_device || 'All'}</td>
                                 <td class="px-4 py-3 text-sm text-gray-700">${ui.formatBytes(fw.size)}</td>
                                 <td class="px-4 py-3">
-                                    <span class="px-2 py-1 rounded text-xs ${ui.getStatusColor(fw.status)}">${fw.status || 'active'}</span>
+                                    <span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getStatusColor(fw.status)}">${fw.status || 'active'}</span>
                                 </td>
                                 <td class="px-4 py-3">
                                     <button onclick="openAssignModal('${fw.version}')"

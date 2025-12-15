@@ -1,180 +1,136 @@
 import { api } from './api.js';
-import { charts } from './charts.js';
 import { ui } from './ui.js';
 
 let refreshInterval = null;
 
-const tooltips = {
-  f1: 'F1-score: Harmonic mean of precision and recall. Higher is better (0-1).',
-  pr_auc: 'PR-AUC: Area under Precision-Recall curve. Higher is better (0-1).',
-  roc_auc: 'ROC-AUC: Area under ROC curve. Higher is better (0-1).',
-  holdout_f1: 'Holdout F1: F1-score on held-out test set. Measures generalization.',
-  train_window_size: 'Training window size: Number of samples used for training.',
-  drift_status: 'Drift status: Indicates if data distribution has shifted from training.',
-};
-
+// NOTE: Model metadata is provided by the ML pipeline via the inference service.
+// The frontend does NOT calculate or compute any model metrics.
+// All data comes from GET /api/model/info endpoint.
 export const modelUI = {
   async load() {
+    // Show loading state
+    document.getElementById('modelCard').innerHTML = `
+      <div class="flex items-center justify-center p-8">
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <span class="ml-3 text-gray-600">Loading model metadata...</span>
+      </div>
+    `;
+
     try {
-      const data = await api.model.info();
-      const model = data.data || {};
+      const response = await api.model.info();
+      
+      // Handle null data (inference service unavailable)
+      if (!response || response.data === null) {
+        this.renderEmpty();
+        return;
+      }
+
+      const model = response.data || {};
       this.render(model);
     } catch (error) {
-      document.getElementById('modelCard').innerHTML = 
-        `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+      this.renderError(error.message || 'Failed to fetch model metadata');
     }
   },
 
   render(model) {
-    // Support both old and new API format
-    const modelVersion = model.model_version || model.version;
-    const driftDetected = model.drift_detected !== undefined ? model.drift_detected : (model.drift_status === 'detected' || (model.drift_features && model.drift_features.length > 0));
-    const topFeatures = model.top_features || model.features || [];
-    const driftBorderClass = driftDetected ? 'border-red-500' : 'border-gray-200';
+    // NOTE: This UI strictly mirrors inference metadata from the backend.
+    // Backend GET /api/model/info returns: { version, train_date, window_minutes, feature_count, threshold, feature_importance }
+    // All field extraction must match backend keys exactly - no fallbacks or computed values.
+
+    // Extract required fields with safe defaults (matching backend keys exactly)
+    const modelVersion = model.version || null;
+    const trainDate = model.train_date || null;
+    const trainWindow = model.window_minutes || null;
+    const featureCount = model.feature_count !== undefined ? model.feature_count : null;
+    const threshold = model.threshold !== undefined ? model.threshold : null;
+
+    // Get top 5 features from feature_importance array
+    const featureImportance = model.feature_importance || [];
+    const topFeatures = Array.isArray(featureImportance) 
+      ? featureImportance.slice(0, 5).map(f => typeof f === 'string' ? f : (f.name || f))
+      : [];
 
     document.getElementById('modelCard').innerHTML = `
-      <div class="bg-white rounded-xl shadow-sm border ${driftBorderClass} p-6">
-        <div class="flex justify-between items-start mb-6">
-          <div>
-            <h2 class="text-2xl font-bold mb-2 text-gray-900">Model Information</h2>
-            ${driftDetected ? '<div class="text-sm text-red-600 font-semibold">⚠️ Data Drift Detected</div>' : ''}
-          </div>
-          <div class="text-sm text-gray-600" id="lastUpdate">Loading...</div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          ${this.renderMetricCard('Version', modelVersion || 'N/A', 'version')}
-          ${this.renderMetricCard('Train Date', ui.formatDate(model.train_date), 'train_date')}
-          ${this.renderMetricCard('Train Window Size', model.train_window_size ? model.train_window_size.toLocaleString() : 'N/A', 'train_window_size')}
-          ${this.renderMetricCard('Drift Status', this.formatDriftStatus(driftDetected ? 'detected' : (model.drift_status || 'none')), 'drift_status', driftDetected)}
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          ${this.renderMetricCard('F1-Score', this.formatMetric(model.f1), 'f1')}
-          ${this.renderMetricCard('PR-AUC', this.formatMetric(model.pr_auc), 'pr_auc')}
-          ${this.renderMetricCard('ROC-AUC', this.formatMetric(model.roc_auc), 'roc_auc')}
-          ${this.renderMetricCard('Holdout F1', this.formatMetric(model.holdout_f1), 'holdout_f1')}
-        </div>
-
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <div class="mb-6">
-          <h3 class="text-lg font-semibold mb-3 text-gray-900">Drifted Features</h3>
-          <div id="driftFeaturesList" class="flex flex-wrap gap-2">
-            ${this.renderDriftFeatures(model.drift_features || [])}
-          </div>
+          <h2 class="text-2xl font-bold mb-2 text-gray-900">Model Metadata</h2>
+          <p class="text-sm text-gray-500">Metadata provided by ML pipeline</p>
         </div>
 
-        <div>
-          <h3 class="text-lg font-semibold mb-3 text-gray-900">Feature Importance</h3>
-          <div class="h-96">
-            <canvas id="featureImportanceChart"></canvas>
-          </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+          ${this.renderField('Model Version', modelVersion)}
+          ${this.renderField('Training Date', trainDate ? ui.formatDate(trainDate) : null)}
+          ${this.renderField('Training Window', trainWindow !== null ? `${trainWindow} minutes` : null)}
+          ${this.renderField('Feature Count', featureCount !== null ? featureCount.toString() : null)}
+          ${this.renderField('Threshold', threshold !== null ? threshold.toString() : null)}
+        </div>
+
+        <div class="mt-6 pt-6 border-t border-gray-200">
+          <h3 class="text-lg font-semibold mb-3 text-gray-900">Top Features</h3>
+          ${this.renderTopFeatures(topFeatures)}
         </div>
       </div>
     `;
-
-    this.renderFeatureChart(topFeatures);
-    document.getElementById('lastUpdate').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
   },
 
-  renderMetricCard(label, value, metricKey, highlight = false) {
-    const tooltip = tooltips[metricKey] || '';
-    const highlightClass = highlight ? 'border-red-500 bg-red-50' : '';
+  renderEmpty() {
+    document.getElementById('modelCard').innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div class="text-center py-8">
+          <p class="text-gray-500 text-lg">Model metadata not available</p>
+          <p class="text-gray-400 text-sm mt-2">The inference service may be unavailable</p>
+        </div>
+      </div>
+    `;
+  },
+
+  renderError(errorMessage) {
+    document.getElementById('modelCard').innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm border border-red-200 p-6">
+        <div class="text-center py-8">
+          <p class="text-red-600 text-lg font-semibold">Error</p>
+          <p class="text-red-500 text-sm mt-2">${errorMessage}</p>
+        </div>
+      </div>
+    `;
+  },
+
+  renderField(label, value) {
+    const displayValue = value !== null && value !== undefined ? value : 'N/A';
+    const textColor = value !== null && value !== undefined ? 'text-gray-900' : 'text-gray-400';
     
     return `
-      <div class="bg-white rounded-lg p-4 border border-gray-200 ${highlightClass} relative group">
-        <div class="text-xs text-gray-600 mb-1 flex items-center">
-          ${label}
-          ${tooltip ? `<span class="ml-1 cursor-help">ℹ️</span>` : ''}
-        </div>
-        <div class="text-xl font-bold text-gray-900">${value}</div>
-        ${tooltip ? `
-          <div class="absolute left-0 top-full mt-2 w-64 p-2 bg-gray-900 text-white border border-gray-700 rounded text-xs opacity-0 group-hover:opacity-100 pointer-events-none z-10 transition-opacity">
-            ${tooltip}
-          </div>
-        ` : ''}
+      <div class="bg-gray-50 rounded-lg p-4 border border-gray-200">
+        <div class="text-xs text-gray-600 mb-1">${label}</div>
+        <div class="text-lg font-semibold ${textColor}">${displayValue}</div>
       </div>
     `;
   },
 
-  formatMetric(value) {
-    if (value === null || value === undefined) return 'N/A';
-    return value.toFixed(4);
-  },
-
-  formatDriftStatus(status) {
-    const statusMap = {
-      detected: '<span class="text-red-600 font-semibold">Detected</span>',
-      none: '<span class="text-green-600">None</span>',
-      unknown: '<span class="text-gray-500">Unknown</span>',
-    };
-    return statusMap[status] || status;
-  },
-
-  renderDriftFeatures(features) {
-    if (features.length === 0) {
-      return '<span class="text-gray-500 text-sm">No drift detected</span>';
-    }
-    return features.map(feature => 
-      `<span class="px-3 py-1 bg-red-50 border border-red-500 rounded text-red-700 text-sm">${feature}</span>`
-    ).join('');
-  },
-
-  renderFeatureChart(features) {
+  renderTopFeatures(features) {
+    // Show top 5 features from feature_importance array
+    // If empty or missing, show "Not available"
     if (!features || features.length === 0) {
-      document.getElementById('featureImportanceChart').parentElement.innerHTML = 
-        '<div class="text-gray-500 text-center py-8">No feature data available</div>';
-      return;
+      return '<p class="text-gray-400 text-sm">Not available</p>';
     }
 
-    const sortedFeatures = [...features].sort((a, b) => b.importance - a.importance).slice(0, 15);
-
-    charts.destroy('featureImportanceChart');
-
-    charts.create('featureImportanceChart', {
-      type: 'bar',
-      data: {
-        labels: sortedFeatures.map(f => f.name),
-        datasets: [{
-          label: 'Importance',
-          data: sortedFeatures.map(f => f.importance),
-          backgroundColor: sortedFeatures.map((f, i) => {
-            const hue = (i * 360 / sortedFeatures.length) % 360;
-            return `hsla(${hue}, 70%, 50%, 0.7)`;
-          }),
-          borderColor: sortedFeatures.map((f, i) => {
-            const hue = (i * 360 / sortedFeatures.length) % 360;
-            return `hsl(${hue}, 70%, 50%)`;
-          }),
-          borderWidth: 1,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        indexAxis: 'y',
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: 'rgba(17, 24, 39, 0.9)',
-            titleColor: '#ffffff',
-            bodyColor: '#ffffff',
-            borderColor: '#6b7280',
-            borderWidth: 1,
-          },
-        },
-        scales: {
-          x: {
-            ticks: { color: '#6b7280' },
-            grid: { color: '#e5e7eb' },
-            beginAtZero: true,
-          },
-          y: {
-            ticks: { color: '#6b7280' },
-            grid: { color: '#e5e7eb' },
-          },
-        },
-      },
-    });
+    return `
+      <ul class="space-y-2">
+        ${features.map((feature, index) => {
+          const featureName = typeof feature === 'string' ? feature : (feature.name || feature);
+          const importance = typeof feature === 'object' && feature.importance !== undefined 
+            ? ` (${feature.importance.toFixed(4)})` 
+            : '';
+          return `
+            <li class="text-gray-900">
+              <span class="text-gray-500">${index + 1}.</span> 
+              <span class="font-medium">${featureName}</span>
+              ${importance ? `<span class="text-gray-400 text-sm">${importance}</span>` : ''}
+            </li>
+          `;
+        }).join('')}
+      </ul>
+    `;
   },
 
   startAutoRefresh(intervalMs = 30000) {

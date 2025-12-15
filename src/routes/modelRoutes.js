@@ -3,7 +3,8 @@ import { getModelInfoHandler } from '../controllers/modelController.js';
 
 const router = express.Router();
 
-router.get('/', getModelInfoHandler);
+// NOTE: Metadata-only endpoint. Does not block server startup if inference is unavailable.
+router.get('/info', getModelInfoHandler);
 
 export default router;
 

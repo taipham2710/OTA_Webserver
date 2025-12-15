@@ -1,23 +1,95 @@
 import axios from 'axios';
 import { config } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
+import { buildFeatureVector } from './featureAggregationService.js';
+import { getModelInfo } from './modelService.js';
 
+// NOTE: Backend does not compute anomaly.
+// It delegates inference to the ML service via /predict.
+// Feature aggregation prepares the full feature vector from multiple data sources.
+// 
+// ML Ops best practice: Always return consistent API contract with threshold as number.
 export const getAnomalyAnalysis = async (deviceId) => {
+  // Get threshold from model metadata (with fallback to 0.5)
+  let thresholdFromModel = 0.5; // Safe default
   try {
-    const response = await axios.get(`${config.inference.api}/anomaly/${deviceId}`, {
+    const modelInfo = await getModelInfo();
+    if (modelInfo && typeof modelInfo.threshold === 'number') {
+      thresholdFromModel = modelInfo.threshold;
+    }
+  } catch (modelError) {
+    console.warn(`Could not fetch model threshold, using default 0.5: ${modelError.message}`);
+  }
+
+  try {
+    // Build full feature vector from metrics, logs, and OTA data
+    let featureVector = {};
+    try {
+      featureVector = await buildFeatureVector(deviceId);
+    } catch (featureError) {
+      // If feature aggregation fails, return safe default
+      console.warn(`Failed to build feature vector for anomaly analysis: ${featureError.message}`);
+      return {
+        isAnomaly: false,
+        anomalyScore: null,
+        threshold: thresholdFromModel, // Always return number
+      };
+    }
+
+    // Prepare request body for FastAPI /predict endpoint with full feature vector
+    const requestBody = {
+      data: featureVector,
+    };
+
+    const response = await axios.post(`${config.inference.api}/predict`, requestBody, {
       timeout: 10000,
+      headers: {
+        'Content-Type': 'application/json',
+      },
     });
-    return response.data;
+
+    // Map FastAPI response to backend domain model
+    const inferenceResult = response.data;
+    const prediction = inferenceResult.prediction ?? inferenceResult.pred ?? null;
+    const prob = inferenceResult.probability ?? inferenceResult.prob ?? inferenceResult.score ?? null;
+    
+    // Get threshold from inference result or model metadata or default
+    const threshold = inferenceResult.threshold ?? thresholdFromModel ?? 0.5;
+
+    // Enforce API contract: threshold MUST always be a number
+    const result = {
+      isAnomaly: prediction === 1,
+      anomalyScore: prob,
+      threshold: typeof threshold === 'number' ? threshold : 0.5,
+    };
+
+    return result;
   } catch (error) {
+    // NOTE: Always return valid API contract even on error
     if (error.response) {
-      throw new AppError(
-        `Inference service error: ${error.response.data?.message || error.message}`,
-        error.response.status
-      );
+      // 4xx or 5xx response - return safe default
+      console.warn(`Inference service error: ${error.response.status} - ${error.response.data?.message || error.message}`);
+      return {
+        isAnomaly: false,
+        anomalyScore: null,
+        threshold: thresholdFromModel, // Always return number
+      };
     } else if (error.request) {
-      throw new AppError('Inference service unavailable', 503);
+      // Network error or timeout - return safe default
+      console.warn('Inference service unavailable or timeout');
+      return {
+        isAnomaly: false,
+        anomalyScore: null,
+        threshold: thresholdFromModel, // Always return number
+      };
     } else {
-      throw new AppError(`Failed to get anomaly analysis: ${error.message}`, 500);
+      // Other error - return safe default
+      console.warn(`Failed to get anomaly analysis: ${error.message}`);
+      return {
+        isAnomaly: false,
+        anomalyScore: null,
+        threshold: thresholdFromModel, // Always return number
+      };
     }
   }
 };

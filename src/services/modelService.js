@@ -1,58 +1,35 @@
-import { getDb } from '../clients/mongodb.js';
-import { AppError } from '../utils/errors.js';
+import axios from 'axios';
+import { config } from '../config/index.js';
 
+// NOTE: This is a metadata-only endpoint that fetches model information
+// from the inference service. It does NOT affect server startup if
+// the inference service is unavailable.
+// MVP implementation: no retries, no caching.
 export const getModelInfo = async () => {
   try {
-    const db = await getDb();
-    const collection = db.collection('model_info');
-    
-    const modelInfo = await collection.findOne({}, { sort: { train_date: -1 } });
-    
-    if (!modelInfo) {
-      return {
-        version: null,
-        train_date: null,
-        train_window_size: null,
-        f1: null,
-        pr_auc: null,
-        roc_auc: null,
-        holdout_f1: null,
-        drift_status: 'unknown',
-        drift_features: [],
-        features: [],
-      };
-    }
+    const response = await axios.get(`${config.inference.api}/metadata`, {
+      timeout: 5000,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
 
-    const driftFeatures = modelInfo.drift_features || [];
-    const driftStatus = driftFeatures.length > 0 ? 'detected' : 'none';
-    const driftDetected = driftFeatures.length > 0 || modelInfo.drift_status === 'detected';
-    
-    const allFeatures = (modelInfo.features || []).map(f => ({
-      name: f.name,
-      importance: f.importance || 0,
-    }));
-    
-    // Sort by importance and get top features
-    const topFeatures = [...allFeatures]
-      .sort((a, b) => b.importance - a.importance)
-      .slice(0, 10);
-
-    return {
-      model_version: modelInfo.version || null,
-      train_date: modelInfo.train_date || null,
-      train_window_size: modelInfo.train_window_size || modelInfo.window_size || null,
-      f1: modelInfo.f1 || null,
-      pr_auc: modelInfo.pr_auc || null,
-      roc_auc: modelInfo.roc_auc || null,
-      holdout_f1: modelInfo.holdout_f1 || null,
-      drift_detected: driftDetected,
-      drift_status: modelInfo.drift_status || driftStatus,
-      drift_features: driftFeatures,
-      top_features: topFeatures,
-      features: allFeatures,
-    };
+    // Return response data on success
+    return response.data;
   } catch (error) {
-    throw new AppError(`Failed to get model info: ${error.message}`, 500);
+    // Return null on failure (do not throw)
+    // This allows the server to start even if inference service is unavailable
+    if (error.response) {
+      // 4xx or 5xx response
+      console.warn(`Inference service metadata error: ${error.response.status} - ${error.response.data?.message || error.message}`);
+    } else if (error.request) {
+      // Network error or timeout
+      console.warn('Inference service metadata unavailable or timeout');
+    } else {
+      // Other error
+      console.warn(`Failed to get model info: ${error.message}`);
+    }
+    return null;
   }
 };
 

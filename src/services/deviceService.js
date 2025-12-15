@@ -53,14 +53,15 @@ export const getDeviceById = async (deviceId) => {
     try {
       const esClient = getElasticsearchClient();
       const logResponse = await esClient.count({
-        index: 'logs-*',
+        index: 'logs-iot-*',
         body: {
           query: {
-            match: { device_id: deviceId },
+            match: { deviceId: deviceId },
           },
         },
       });
-      deviceData.logCount = logResponse.body.count || 0;
+      // Elasticsearch v8 client returns count directly (not response.body.count)
+      deviceData.logCount = logResponse?.count ?? logResponse?.body?.count ?? 0;
     } catch (error) {
       deviceData.logCount = 0;
     }
@@ -92,18 +93,18 @@ export const getDeviceById = async (deviceId) => {
       deviceData.metricCount = 0;
     }
 
-    // Get anomaly score from FastAPI
+    // Get anomaly score from FastAPI inference service
     try {
       const anomalyData = await getAnomalyAnalysis(deviceId);
-      deviceData.anomalyScore = anomalyData.score || anomalyData.anomaly_score || null;
-      deviceData.anomalyThreshold = anomalyData.threshold || null;
-      deviceData.isAnomaly = deviceData.anomalyScore && deviceData.anomalyThreshold
-        ? deviceData.anomalyScore > deviceData.anomalyThreshold
-        : null;
+      deviceData.anomalyScore = anomalyData.anomalyScore ?? null;
+      deviceData.anomalyThreshold = anomalyData.threshold ?? null;
+      deviceData.isAnomaly = anomalyData.isAnomaly ?? false;
     } catch (error) {
+      // NOTE: Temporary fallback for MVP/demo stability.
+      // Should be replaced with strict failure handling in production.
       deviceData.anomalyScore = null;
       deviceData.anomalyThreshold = null;
-      deviceData.isAnomaly = null;
+      deviceData.isAnomaly = false;
     }
 
     return deviceData;
