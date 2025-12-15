@@ -24,8 +24,14 @@
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-2">Measurement</label>
-                        <input type="text" id="measurement" name="measurement" value="sensor_data"
-                            class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                        <select id="measurement" name="measurement" class="block w-full px-3 py-2 border border-gray-300 rounded-md">
+                            <option value="cpu">CPU Usage</option>
+                            <option value="temperature">Temperature</option>
+                            <option value="battery">Battery Level</option>
+                            <option value="latency">Network Latency</option>
+                            <option value="packet_loss">Packet Loss</option>
+                            <option value="rssi">RSSI</option>
+                        </select>
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-2">Limit</label>
@@ -65,6 +71,24 @@
     </div>
 
     <script>
+        // ============================================================================
+        // METRIC FIELD MAPPING
+        // ============================================================================
+        // Explicit mapping from measurement name to backend metric key
+        // Backend returns metrics.cpu_usage, not metrics.cpu
+        // This mapping ensures correct data extraction for IoT + ML systems
+        const METRIC_FIELD_MAP = {
+            cpu: 'cpu_usage',
+            temperature: 'temperature',
+            battery: 'battery_level',
+            latency: 'latency_ms',
+            packet_loss: 'packet_loss_pct',
+            rssi: 'rssi',
+            memory: 'memory_usage',
+            storage: 'storage_usage',
+            uptime: 'uptime',
+        };
+
         let chart = null;
         let refreshInterval = null;
 
@@ -73,11 +97,12 @@
             const formData = new FormData(e.target);
             const params = new URLSearchParams();
             
+            // MVP: Only send deviceId, measurement, and limit
+            // Date inputs remain visible but are intentionally ignored
             if (formData.get('deviceId')) params.append('deviceId', formData.get('deviceId'));
             if (formData.get('measurement')) params.append('measurement', formData.get('measurement'));
             if (formData.get('limit')) params.append('limit', formData.get('limit'));
-            if (formData.get('start')) params.append('start', new Date(formData.get('start')).toISOString());
-            if (formData.get('end')) params.append('end', new Date(formData.get('end')).toISOString());
+            // ❌ NO startDate/endDate passed to backend (MVP mode)
 
             if (refreshInterval) {
                 clearInterval(refreshInterval);
@@ -92,11 +117,11 @@
                 refreshInterval = setInterval(async () => {
                     const formData = new FormData(document.getElementById('queryForm'));
                     const params = new URLSearchParams();
+                    // MVP: Only send deviceId, measurement, and limit
                     if (formData.get('deviceId')) params.append('deviceId', formData.get('deviceId'));
                     if (formData.get('measurement')) params.append('measurement', formData.get('measurement'));
                     if (formData.get('limit')) params.append('limit', formData.get('limit'));
-                    if (formData.get('start')) params.append('start', new Date(formData.get('start')).toISOString());
-                    if (formData.get('end')) params.append('end', new Date(formData.get('end')).toISOString());
+                    // ❌ NO startDate/endDate passed to backend (MVP mode)
                     await queryMetrics(params);
                 }, 30000);
             } else {
@@ -107,67 +132,228 @@
             }
         });
 
+        const showEmptyState = (message) => {
+            const chartContainer = document.getElementById('metricsChart').parentElement;
+            chartContainer.innerHTML = `
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">Metrics Chart</h2>
+                    <label class="flex items-center space-x-2">
+                        <input type="checkbox" id="autoRefresh" class="rounded">
+                        <span class="text-sm">Auto-refresh (30s)</span>
+                    </label>
+                </div>
+                <div class="p-8 text-center text-gray-500">
+                    ${message}
+                </div>
+                <canvas id="metricsChart" height="100" class="hidden"></canvas>
+            `;
+            
+            // Re-attach auto-refresh listener (MVP mode - no date params)
+            document.getElementById('autoRefresh').addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    refreshInterval = setInterval(async () => {
+                        const formData = new FormData(document.getElementById('queryForm'));
+                        const params = new URLSearchParams();
+                        // MVP: Only send deviceId, measurement, and limit
+                        if (formData.get('deviceId')) params.append('deviceId', formData.get('deviceId'));
+                        if (formData.get('measurement')) params.append('measurement', formData.get('measurement'));
+                        if (formData.get('limit')) params.append('limit', formData.get('limit'));
+                        // ❌ NO startDate/endDate passed to backend (MVP mode)
+                        await queryMetrics(params);
+                    }, 30000);
+                } else {
+                    if (refreshInterval) {
+                        clearInterval(refreshInterval);
+                        refreshInterval = null;
+                    }
+                }
+            });
+
+            if (chart) {
+                chart.destroy();
+                chart = null;
+            }
+        };
+
         const queryMetrics = async (params) => {
             try {
+                // MVP: Use relative URL so webserver proxy /api → backend inside Kubernetes
                 const response = await fetch(`/api/metrics?${params.toString()}`);
                 const data = await response.json();
 
-                if (response.ok && data.data) {
-                    const metrics = data.data;
-                    const groupedByField = {};
+                // Defensive: NEVER assume data exists, NEVER call .map() on undefined
+                // Backend shape: { success: true, data: [...] }
+                const metrics = data?.data ?? [];
+                const safeMetrics = Array.isArray(metrics) ? metrics : [];
+
+                // Get measurement from URL params
+                const measurement = params.get('measurement') || 'cpu';
+                
+                // Resolve metricKey safely using mapping
+                const metricKey = METRIC_FIELD_MAP[measurement];
+
+                if (!metricKey) {
+                    showEmptyState(`Unsupported measurement: ${measurement}. Supported: ${Object.keys(METRIC_FIELD_MAP).join(', ')}`);
+                    return;
+                }
+
+                // ============================================================================
+                // CHART DATA PREPARATION (NO TIME FILTERING - MVP MODE)
+                // ============================================================================
+                // Backend is the single source of truth - render ALL returned metrics
+                // ❌ NO frontend time filtering - display exactly what backend returns
+                // Backend structure: { timestamp, metrics: { cpu_usage: 0.51, ... } }
+                
+                // Build chart points from ALL returned metrics
+                // Force render if backend returns data (even if sparse)
+                const points = safeMetrics
+                    .map((m) => {
+                        // Defensive: validate metric record
+                        if (!m || !m.timestamp) return null;
+                        if (!m.metrics || typeof m.metrics !== 'object') return null;
+                        
+                        // Extract value using mapped metricKey (MUST use m.metrics?.[metricKey])
+                        const value = m.metrics?.[metricKey];
+                        
+                        // Filter ONLY invalid points (y === null OR y === undefined OR not a number)
+                        if (value === null || value === undefined || typeof value !== 'number') return null;
+                        
+                        return {
+                            x: new Date(m.timestamp).getTime(), // Use getTime() for Chart.js linear scale
+                            y: value
+                        };
+                    })
+                    .filter(p => p !== null && typeof p.y === 'number'); // Only keep valid numeric points
+
+                // Debug logging (mandatory for verification)
+                console.log('[Metrics] measurement:', measurement);
+                console.log('[Metrics] metricKey:', metricKey);
+                console.log('[Metrics] records:', safeMetrics.length);
+                console.log('[Metrics] points:', points.length);
+
+                // Empty state handling - ONLY show if ZERO usable points
+                // ⚠️ Do NOT show empty state if backend returned data but metric exists only in some records
+                // IoT metrics are sparse - this is expected
+                if (points.length === 0) {
+                    showEmptyState('No metrics data available');
+                    return;
+                }
+
+                // Restore chart container if it was replaced by empty state
+                const chartContainer = document.getElementById('metricsChart').parentElement;
+                if (!document.getElementById('metricsChart') || document.getElementById('metricsChart').classList.contains('hidden')) {
+                    chartContainer.innerHTML = `
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-semibold">Metrics Chart</h2>
+                            <label class="flex items-center space-x-2">
+                                <input type="checkbox" id="autoRefresh" class="rounded">
+                                <span class="text-sm">Auto-refresh (30s)</span>
+                            </label>
+                        </div>
+                        <canvas id="metricsChart" height="100"></canvas>
+                    `;
                     
-                    metrics.forEach(metric => {
-                        if (!groupedByField[metric.field]) {
-                            groupedByField[metric.field] = [];
-                        }
-                        groupedByField[metric.field].push({
-                            x: new Date(metric.time).getTime(),
-                            y: metric.value
-                        });
-                    });
-
-                    const datasets = Object.keys(groupedByField).map((field, index) => ({
-                        label: field,
-                        data: groupedByField[field].sort((a, b) => a.x - b.x),
-                        borderColor: `hsl(${index * 60}, 70%, 50%)`,
-                        backgroundColor: `hsla(${index * 60}, 70%, 50%, 0.1)`,
-                        tension: 0.1
-                    }));
-
-                    const ctx = document.getElementById('metricsChart').getContext('2d');
-                    
-                    if (chart) {
-                        chart.destroy();
-                    }
-
-                    chart = new Chart(ctx, {
-                        type: 'line',
-                        data: { datasets },
-                        options: {
-                            responsive: true,
-                            scales: {
-                                x: {
-                                    type: 'linear',
-                                    ticks: {
-                                        callback: function(value) {
-                                            return new Date(value).toLocaleTimeString();
-                                        }
-                                    }
-                                },
-                                y: {
-                                    beginAtZero: false
-                                }
+                    // Re-attach auto-refresh listener (MVP mode - no date params)
+                    document.getElementById('autoRefresh').addEventListener('change', (e) => {
+                        if (e.target.checked) {
+                            refreshInterval = setInterval(async () => {
+                                const formData = new FormData(document.getElementById('queryForm'));
+                                const params = new URLSearchParams();
+                                // MVP: Only send deviceId, measurement, and limit
+                                if (formData.get('deviceId')) params.append('deviceId', formData.get('deviceId'));
+                                if (formData.get('measurement')) params.append('measurement', formData.get('measurement'));
+                                if (formData.get('limit')) params.append('limit', formData.get('limit'));
+                                // ❌ NO startDate/endDate passed to backend (MVP mode)
+                                await queryMetrics(params);
+                            }, 30000);
+                        } else {
+                            if (refreshInterval) {
+                                clearInterval(refreshInterval);
+                                refreshInterval = null;
                             }
                         }
                     });
-                } else {
-                    const errorMsg = data.message || data.error?.message || 'Failed to fetch metrics';
-                    alert(`Error: ${errorMsg}`);
                 }
+
+                // Chart.js dataset configuration (MVP-safe)
+                // spanGaps: true is mandatory because IoT metrics are sparse
+                const datasets = [{
+                    label: measurement.toUpperCase(), // Never shows "undefined" because metricKey is validated
+                    data: points,
+                    borderColor: '#2563eb',
+                    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                    spanGaps: true, // MANDATORY: IoT metrics are sparse
+                    tension: 0.3,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                }];
+
+                const ctx = document.getElementById('metricsChart').getContext('2d');
+                
+                if (chart) {
+                    chart.destroy();
+                }
+
+                chart = new Chart(ctx, {
+                    type: 'line',
+                    data: { 
+                        datasets: datasets 
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        parsing: false, // MVP-safe: disable Chart.js parsing
+                        interaction: {
+                            intersect: false,
+                            mode: 'index',
+                        },
+                        scales: {
+                            x: {
+                                type: 'linear', // No time adapter plugin required
+                                position: 'bottom',
+                                ticks: {
+                                    callback: function(value) {
+                                        return new Date(value).toLocaleTimeString();
+                                    }
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Time'
+                                }
+                            },
+                            y: {
+                                beginAtZero: false,
+                                title: {
+                                    display: true,
+                                    text: measurement.toUpperCase()
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const value = context.parsed.y;
+                                        return `${context.dataset.label}: ${value !== null && value !== undefined ? value.toFixed(4) : 'N/A'}`;
+                                    },
+                                    title: function(context) {
+                                        const timestamp = context[0].parsed.x;
+                                        return new Date(timestamp).toLocaleString();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
             } catch (error) {
-                alert(`Error: ${error.message || 'Network error occurred'}`);
+                console.error('Metrics query error:', error);
+                showEmptyState(`Error: ${error.message || 'Failed to fetch metrics'}`);
             }
-        });
+        };
     </script>
 </body>
 </html>
