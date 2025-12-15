@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import { createServer } from 'http';
 import { config } from './src/config/index.js';
 import { errorHandler } from './src/utils/errors.js';
@@ -14,9 +15,23 @@ import { setServerReady } from './src/controllers/healthController.js';
 import { ensureBucketExists } from './src/clients/minio.js';
 import { getMongoClient } from './src/clients/mongodb.js';
 import { initSocket } from './src/realtime/socket.js';
+import { ensureLogsIndexTemplate } from './src/services/elasticsearchTemplate.js';
 
 const app = express();
 const httpServer = createServer(app);
+
+// Enable CORS for browser-based dashboard (Kubernetes / multi-origin)
+// NOTE: Keep this before all routes so preflight and API calls are handled correctly.
+app.use(
+  cors({
+    origin: [
+      'http://edge.khoaluan.local',
+      'http://localhost:3000',
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  }),
+);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -40,6 +55,13 @@ const startServer = async () => {
     console.log('Connected to services');
   } catch (error) {
     console.warn('Warning: Some services may not be available:', error.message);
+  }
+
+  // Ensure Elasticsearch index template exists
+  try {
+    await ensureLogsIndexTemplate();
+  } catch (error) {
+    console.warn('Warning: Elasticsearch template setup failed:', error.message);
   }
 
   // Initialize Socket.IO
