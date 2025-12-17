@@ -1,17 +1,24 @@
 import { getElasticsearchClient } from '../clients/elasticsearch.js';
 import { AppError } from '../utils/errors.js';
 
-const getDailyIndexName = (date) => {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `logs-iot-${year}.${month}.${day}`;
-};
+// Name of the Elasticsearch logs data stream (must be pre-created in ES)
+// NOTE: Do NOT change simulator or ES template here - only web server ingestion.
+const LOGS_DATA_STREAM = 'logs-iot';
 
 export const ingestLog = async (logData) => {
   try {
     const client = getElasticsearchClient();
 
+    if (!logData || typeof logData !== 'object' || Array.isArray(logData)) {
+      throw new AppError('Invalid log payload, expected JSON object', 400);
+    }
+
+    // Enforce presence of @timestamp at ROOT level for data stream
+    if (!('@timestamp' in logData) || !logData['@timestamp']) {
+      throw new AppError('Missing @timestamp at root level', 400);
+    }
+
+    // Optional sanity checks (do NOT modify payload)
     if (!logData.deviceId || typeof logData.deviceId !== 'string') {
       throw new AppError('deviceId is required', 400);
     }
@@ -20,28 +27,22 @@ export const ingestLog = async (logData) => {
       throw new AppError('message is required', 400);
     }
 
-    const timestamp = logData.timestamp ? new Date(logData.timestamp) : new Date();
-    const level = logData.level || 'info';
-    const ingestedAt = new Date().toISOString();
-
-    const logDocument = {
-      deviceId: logData.deviceId,
-      level: level.toLowerCase(),
-      message: logData.message,
-      timestamp: timestamp.toISOString(),
-      ingestedAt,
+    // Preserve the exact payload as sent by simulator
+    const doc = {
+      ...logData,
     };
 
-    const indexName = getDailyIndexName(timestamp);
+    // Debug log before indexing to Elasticsearch
+    console.log('[ES-DOC]', JSON.stringify(doc, null, 2));
 
     const response = await client.index({
-      index: indexName,
-      document: logDocument,
+      index: LOGS_DATA_STREAM,
+      document: doc,
     });
 
     return {
       id: response._id,
-      ...logDocument,
+      ...doc,
     };
   } catch (error) {
     if (error.statusCode) {
@@ -105,4 +106,3 @@ export const queryLogs = async (queryParams = {}) => {
     throw new AppError(`Failed to query logs: ${error.message}`, 500);
   }
 };
-
