@@ -5,6 +5,58 @@ import { getAnomalyAnalysis } from './anomalyService.js';
 import { config } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
 
+// Helper: Get last log timestamp from Elasticsearch
+const getLastLogTimestamp = async (deviceId) => {
+  try {
+    const esClient = getElasticsearchClient();
+    const res = await esClient.search({
+      index: 'logs-iot',
+      size: 1,
+      body: {
+        query: {
+          term: { 'deviceId.keyword': deviceId },
+        },
+        sort: [{ '@timestamp': { order: 'desc' } }],
+      },
+    });
+
+    const hit = res?.hits?.hits?.[0];
+    return hit ? new Date(hit._source['@timestamp']) : null;
+  } catch {
+    return null;
+  }
+};
+
+// Helper: Get last metric timestamp from InfluxDB
+const getLastMetricTimestamp = async (deviceId) => {
+  try {
+    const queryApi = getQueryApi();
+    const fluxQuery = `
+      from(bucket: "${config.influx.bucket}")
+        |> range(start: -7d)
+        |> filter(fn: (r) => r.device_id == "${deviceId}")
+        |> sort(columns: ["_time"], desc: true)
+        |> limit(n: 1)
+    `;
+
+    let lastTime = null;
+    await new Promise((resolve, reject) => {
+      queryApi.queryRows(fluxQuery, {
+        next(row, tableMeta) {
+          const o = tableMeta.toObject(row);
+          lastTime = new Date(o._time);
+        },
+        error: reject,
+        complete: resolve,
+      });
+    });
+
+    return lastTime;
+  } catch {
+    return null;
+  }
+};
+
 export const getDevices = async (queryParams = {}) => {
   try {
     const db = await getDb();
@@ -22,11 +74,43 @@ export const getDevices = async (queryParams = {}) => {
       .skip(skip)
       .toArray();
 
-    return devices.map(device => ({
-      id: device._id.toString(),
-      ...device,
-      _id: undefined,
-    }));
+    const now = Date.now();
+    const ONLINE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+    const enrichedDevices = await Promise.all(
+      devices.map(async (device) => {
+        const deviceId = device.deviceId;
+
+        const lastLogTime = await getLastLogTimestamp(deviceId);
+        const lastMetricTime = await getLastMetricTimestamp(deviceId);
+
+        let lastSeenAt = device.lastSeenAt
+          ? new Date(device.lastSeenAt)
+          : null;
+
+        if (lastLogTime && (!lastSeenAt || lastLogTime > lastSeenAt)) {
+          lastSeenAt = lastLogTime;
+        }
+        if (lastMetricTime && (!lastSeenAt || lastMetricTime > lastSeenAt)) {
+          lastSeenAt = lastMetricTime;
+        }
+
+        const computedStatus =
+          lastSeenAt && now - lastSeenAt.getTime() < ONLINE_THRESHOLD_MS
+            ? 'active'
+            : 'inactive';
+
+        return {
+          id: device._id.toString(),
+          ...device,
+          lastSeenAt: lastSeenAt ? lastSeenAt.toISOString() : (device.lastSeenAt || device.createdAt || new Date()).toISOString(),
+          status: computedStatus,
+          _id: undefined,
+        };
+      })
+    );
+
+    return enrichedDevices;
   } catch (error) {
     throw new AppError(`Failed to get devices: ${error.message}`, 500);
   }
@@ -106,6 +190,27 @@ export const getDeviceById = async (deviceId) => {
       deviceData.anomalyThreshold = null;
       deviceData.isAnomaly = false;
     }
+
+    // ===== Compute runtime lastSeen & status =====
+    const lastLogTime = await getLastLogTimestamp(deviceId);
+    const lastMetricTime = await getLastMetricTimestamp(deviceId);
+
+    let lastSeenAt = device.lastSeenAt ? new Date(device.lastSeenAt) : null;
+
+    if (lastLogTime && (!lastSeenAt || lastLogTime > lastSeenAt)) {
+      lastSeenAt = lastLogTime;
+    }
+    if (lastMetricTime && (!lastSeenAt || lastMetricTime > lastSeenAt)) {
+      lastSeenAt = lastMetricTime;
+    }
+
+    deviceData.lastSeenAt = lastSeenAt;
+
+    const ONLINE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    deviceData.status =
+      lastSeenAt && Date.now() - lastSeenAt.getTime() < ONLINE_THRESHOLD_MS
+        ? 'active'
+        : 'inactive';
 
     return deviceData;
   } catch (error) {
