@@ -59,43 +59,43 @@ export const queryLogs = async (queryParams = {}) => {
 
     const must = [];
 
+    // FIX 1: keyword field
     if (deviceId) {
-      must.push({ term: { deviceId: deviceId } });
+      must.push({
+        term: { 'deviceId.keyword': deviceId },
+      });
     }
 
+    // FIX 2: level dùng term
     if (level) {
-      must.push({ match: { level: level.toLowerCase() } });
+      must.push({
+        term: { 'level.keyword': level },
+      });
     }
 
-    if (start || end) {
-      const range = {};
-      if (start) range.gte = start.toISOString();
-      if (end) range.lte = end.toISOString();
-      must.push({ range: { '@timestamp': range } });
-    }
-
-    const body = {
-      size: limit,
-      query: must.length > 0
-        ? {
-            bool: {
-              must,
-            },
-          }
-        : {
-            match_all: {},
+    // FIX 3: chỉ apply time filter khi THỰC SỰ có
+    if (start && end) {
+      must.push({
+        range: {
+          '@timestamp': {
+            gte: start.toISOString(),
+            lte: end.toISOString(),
           },
-      sort: [
-        { '@timestamp': { order: 'desc' } },
-      ],
-    };
+        },
+      });
+    }
 
     const response = await client.search({
       index: 'logs-iot',
-      body,
+      body: {
+        size: limit,
+        query: must.length
+          ? { bool: { must } }
+          : { match_all: {} },
+        sort: [{ '@timestamp': { order: 'desc' } }],
+      },
     });
 
-    // Elasticsearch v8 client returns response.hits.hits directly (not response.body.hits.hits)
     const hits = response?.hits?.hits ?? [];
 
     return hits.map((hit) => ({
