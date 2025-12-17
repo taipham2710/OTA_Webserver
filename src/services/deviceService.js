@@ -53,10 +53,10 @@ export const getDeviceById = async (deviceId) => {
     try {
       const esClient = getElasticsearchClient();
       const logResponse = await esClient.count({
-        index: 'logs-iot-*',
+        index: 'logs-iot',
         body: {
           query: {
-            match: { deviceId: deviceId },
+            term: { deviceId: deviceId },
           },
         },
       });

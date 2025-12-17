@@ -60,7 +60,7 @@ export const queryLogs = async (queryParams = {}) => {
     const must = [];
 
     if (deviceId) {
-      must.push({ match: { deviceId: deviceId } });
+      must.push({ term: { deviceId: deviceId } });
     }
 
     if (level) {
@@ -71,7 +71,7 @@ export const queryLogs = async (queryParams = {}) => {
       const range = {};
       if (start) range.gte = start.toISOString();
       if (end) range.lte = end.toISOString();
-      must.push({ range: { timestamp: range } });
+      must.push({ range: { '@timestamp': range } });
     }
 
     const body = {
@@ -86,12 +86,12 @@ export const queryLogs = async (queryParams = {}) => {
             match_all: {},
           },
       sort: [
-        { timestamp: { order: 'desc' } },
+        { '@timestamp': { order: 'desc' } },
       ],
     };
 
     const response = await client.search({
-      index: 'logs-iot-*',
+      index: 'logs-iot',
       body,
     });
 

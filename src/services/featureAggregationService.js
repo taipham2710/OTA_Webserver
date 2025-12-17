@@ -645,8 +645,10 @@ export const buildFeatureVector = async (deviceId, options = {}) => {
       const buckets = {};
 
       errorLogs.forEach(log => {
-        if (log.timestamp) {
-          const logTime = new Date(log.timestamp).getTime();
+        // Use @timestamp from Elasticsearch data stream (fallback to timestamp for compatibility)
+        const timestampValue = log['@timestamp'] || log.timestamp;
+        if (timestampValue) {
+          const logTime = new Date(timestampValue).getTime();
           const bucketKey = Math.floor(logTime / bucketSizeMs) * bucketSizeMs;
           buckets[bucketKey] = (buckets[bucketKey] || 0) + 1;
         }
