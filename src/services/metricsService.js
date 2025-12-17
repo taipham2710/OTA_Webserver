@@ -128,4 +128,3 @@ export const queryMetrics = async (queryParams = {}) => {
     throw new AppError(`Failed to query metrics: ${error.message}`, 500);
   }
 };
-
