@@ -636,43 +636,52 @@
             
             // Defensive: Empty data is VALID, show empty state, stay on tab
             if (!Array.isArray(logs) || logs.length === 0) {
-                logsContent.innerHTML = 
-                    '<div class="p-8 text-center text-gray-500">No logs available for this device</div>';
+                logsContent.innerHTML = `
+                    <div class="space-y-4">
+                        <div class="p-8 text-center text-gray-500">No logs available for this device</div>
+                        <div class="text-center">
+                            <a href="/logs.html?deviceId=${encodeURIComponent(deviceId)}" 
+                               class="text-blue-600 hover:text-blue-700 underline">
+                                View all logs in Logs tab →
+                            </a>
+                        </div>
+                    </div>
+                `;
                 return;
             }
 
-            // Ensure logs are newest-first (backend should already sort, but be defensive)
-            const sortedLogs = [...logs].sort((a, b) => {
-                const timeA = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
-                const timeB = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
-                return timeB - timeA; // Descending (newest first)
-            });
+            // Backend already sorts by @timestamp DESC, so no frontend sorting needed
+            // Logs are already normalized with timestamp field
 
             logsContent.innerHTML = `
-                <div class="space-y-2">
-                    ${sortedLogs.map(log => {
-                        // Defensive rendering with fallbacks
-                        const deviceId = log.deviceId || 'unknown';
-                        const level = log.level || 'info';
-                        const message = log.message || '(empty message)';
-                        const timestamp = log.timestamp ? ui.formatDate(log.timestamp) : 'unknown time';
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-lg font-semibold text-gray-900">Recent Logs (Latest 10)</h3>
+                        <a href="/logs.html?deviceId=${encodeURIComponent(deviceId)}" 
+                           class="text-sm text-blue-600 hover:text-blue-700 underline">
+                            View all logs →
+                        </a>
+                    </div>
+                    <div class="space-y-2">
+                        ${logs.map(log => {
+                            const timestamp = log.timestamp ? ui.formatDate(log.timestamp) : 'unknown time';
+                            const levelColor = log.level === 'ERROR' 
+                                ? 'bg-red-100 text-red-800' 
+                                : log.level === 'WARN' 
+                                ? 'bg-yellow-100 text-yellow-800' 
+                                : 'bg-blue-100 text-blue-800';
 
-                        const levelColor = level === 'ERROR' 
-                            ? 'bg-red-100 text-red-800' 
-                            : level === 'WARN' 
-                            ? 'bg-yellow-100 text-yellow-800' 
-                            : 'bg-blue-100 text-blue-800';
-
-                        return `
-                            <div class="p-3 bg-gray-50 rounded text-sm border border-gray-200">
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">${timestamp}</span>
-                                    <span class="px-2 py-1 rounded text-xs ${levelColor}">${level.toUpperCase()}</span>
+                            return `
+                                <div class="p-3 bg-gray-50 rounded text-sm border border-gray-200">
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-600">${timestamp}</span>
+                                        <span class="px-2 py-1 rounded text-xs ${levelColor}">${log.level.toUpperCase()}</span>
+                                    </div>
+                                    <div class="mt-1 text-gray-900">${log.message}</div>
                                 </div>
-                                <div class="mt-1 text-gray-900">${message}</div>
-                            </div>
-                        `;
-                    }).join('')}
+                            `;
+                        }).join('')}
+                    </div>
                 </div>
             `;
         }
@@ -688,20 +697,29 @@
             `;
 
             try {
-                const response = await api.logs.list({ deviceId, limit: 50 });
+                // Call API /api/logs with deviceId and limit 10 (latest logs only)
+                const response = await api.logs.list({ deviceId, limit: 10 });
                 
-                // Defensive: NEVER assume data exists, NEVER call .map() on undefined
-                // Rules: Empty data is VALID, UI must stay on Logs tab, no navigation reset
-                const logs = response?.data?.data ?? [];
-                
-                // Ensure logs is an array before processing
-                logsList = Array.isArray(logs) ? logs : [];
-                
-                // Cap list length
-                if (logsList.length > MAX_LOGS_DISPLAY) {
-                    logsList = logsList.slice(0, MAX_LOGS_DISPLAY);
+                // Defensive: read from data.data (backend returns { success: true, data: [...] })
+                if (!response || !response.data) {
+                    logsContent.innerHTML = 
+                        '<div class="p-8 text-center text-gray-500">No logs available for this device</div>';
+                    logsList = [];
+                    return;
                 }
 
+                const rawLogs = Array.isArray(response.data) ? response.data : [];
+                
+                // Normalize logs: map @timestamp to timestamp for clean UI rendering
+                const normalizedLogs = rawLogs.map(log => ({
+                    id: log.id,
+                    timestamp: log['@timestamp'] || log.timestamp,
+                    deviceId: log.deviceId || log.device_id || 'N/A',
+                    level: log.level || 'info',
+                    message: log.message || '(empty message)',
+                }));
+                
+                logsList = normalizedLogs;
                 renderLogs(logsList);
             } catch (error) {
                 // Show error state
@@ -717,20 +735,21 @@
             
             if (!newLog) return;
 
-            // Defensive: ensure log has required fields
+            // Normalize log: map @timestamp to timestamp
             const log = {
+                id: newLog.id || `realtime-${Date.now()}`,
                 deviceId: newLog.deviceId || newLog.device_id || 'unknown',
                 level: newLog.level || 'info',
                 message: newLog.message || '(empty message)',
-                timestamp: newLog.timestamp || new Date().toISOString(),
+                timestamp: newLog['@timestamp'] || newLog.timestamp || new Date().toISOString(),
             };
 
             // Prepend to list (newest first)
             logsList.unshift(log);
 
-            // Cap list length
-            if (logsList.length > MAX_LOGS_DISPLAY) {
-                logsList = logsList.slice(0, MAX_LOGS_DISPLAY);
+            // Cap list length to 10 (latest only)
+            if (logsList.length > 10) {
+                logsList = logsList.slice(0, 10);
             }
 
             // Re-render if on logs tab
@@ -795,16 +814,25 @@
                 let timelineData = [];
                 try {
                     const logsData = await api.logs.list({ deviceId, limit: 100 });
-                    const logs = logsData.data || [];
+                    const rawLogs = Array.isArray(logsData.data) ? logsData.data : [];
+                    
+                    // Normalize logs: map @timestamp to timestamp
+                    const normalizedLogs = rawLogs.map(log => ({
+                        id: log.id,
+                        timestamp: log['@timestamp'] || log.timestamp,
+                        deviceId: log.deviceId || log.device_id || 'N/A',
+                        level: log.level || 'info',
+                        message: log.message || '(empty message)',
+                    }));
                     
                     // Extract anomaly-related logs
-                    timelineData = logs
+                    timelineData = normalizedLogs
                         .filter(log => log.level === 'ERROR' || log.message?.toLowerCase().includes('anomaly'))
                         .slice(0, 20)
                         .map(log => ({
                             time: log.timestamp,
                             type: log.level,
-                            message: log.message || log.log || 'N/A'
+                            message: log.message || 'N/A'
                         }));
                 } catch (err) {
                     console.warn('Could not load timeline data:', err);
