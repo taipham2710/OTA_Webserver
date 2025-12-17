@@ -12,10 +12,23 @@ import { getModelInfo } from './modelService.js';
 export const getAnomalyAnalysis = async (deviceId) => {
   // Get threshold from model metadata (with fallback to 0.5)
   let thresholdFromModel = 0.5; // Safe default
+  let modelMetadata = {
+    name: 'xgboost',
+    version: 'v1.0',
+    thresholdSource: 'default',
+  };
   try {
     const modelInfo = await getModelInfo();
-    if (modelInfo && typeof modelInfo.threshold === 'number') {
-      thresholdFromModel = modelInfo.threshold;
+    if (modelInfo) {
+      if (typeof modelInfo.threshold === 'number') {
+        thresholdFromModel = modelInfo.threshold;
+      }
+      // Extract model metadata
+      modelMetadata = {
+        name: modelInfo.name || modelInfo.model_name || 'xgboost',
+        version: modelInfo.version || modelInfo.model_version || 'v1.0',
+        thresholdSource: modelInfo.threshold ? 'model-metadata' : 'default',
+      };
     }
   } catch (modelError) {
     console.warn(`Could not fetch model threshold, using default 0.5: ${modelError.message}`);
@@ -33,6 +46,7 @@ export const getAnomalyAnalysis = async (deviceId) => {
         isAnomaly: false,
         anomalyScore: null,
         threshold: thresholdFromModel, // Always return number
+        features: {}, // Empty features on error
       };
     }
 
@@ -61,6 +75,8 @@ export const getAnomalyAnalysis = async (deviceId) => {
       isAnomaly: prediction === 1,
       anomalyScore: prob,
       threshold: typeof threshold === 'number' ? threshold : 0.5,
+      features: featureVector, // Include features for explanation engine
+      model: modelMetadata, // Include model metadata for MLOps traceability
     };
 
     return result;
@@ -73,6 +89,8 @@ export const getAnomalyAnalysis = async (deviceId) => {
         isAnomaly: false,
         anomalyScore: null,
         threshold: thresholdFromModel, // Always return number
+        features: {}, // Empty features on error
+        model: modelMetadata,
       };
     } else if (error.request) {
       // Network error or timeout - return safe default
@@ -81,6 +99,8 @@ export const getAnomalyAnalysis = async (deviceId) => {
         isAnomaly: false,
         anomalyScore: null,
         threshold: thresholdFromModel, // Always return number
+        features: {}, // Empty features on error
+        model: modelMetadata,
       };
     } else {
       // Other error - return safe default
@@ -89,6 +109,8 @@ export const getAnomalyAnalysis = async (deviceId) => {
         isAnomaly: false,
         anomalyScore: null,
         threshold: thresholdFromModel, // Always return number
+        features: {}, // Empty features on error
+        model: modelMetadata,
       };
     }
   }
