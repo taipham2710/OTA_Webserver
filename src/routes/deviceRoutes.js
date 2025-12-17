@@ -14,4 +14,3 @@ router.post('/:deviceId/report', rateLimitDevice(60, 60000), authenticateDevice,
 router.get('/:id', getDeviceByIdHandler);
 
 export default router;
-

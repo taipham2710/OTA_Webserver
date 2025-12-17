@@ -341,4 +341,3 @@ export const retryOTAForDevice = async (deviceId) => {
     throw new AppError(`Failed to retry OTA for device: ${error.message}`, 500);
   }
 };
-
