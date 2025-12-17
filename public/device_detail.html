@@ -8,6 +8,241 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        /* ===============================
+           General layout
+        ================================ */
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #111827;
+        }
+
+        .loading {
+            color: #6b7280;
+            font-style: italic;
+        }
+
+        /* ===============================
+           OTA Banner
+        ================================ */
+        .ota-banner {
+            border: 1px solid #e5e7eb;
+            padding: 12px;
+            margin-bottom: 16px;
+            background: #f9fafb;
+        }
+
+        .ota-banner.allow {
+            border-left: 4px solid #15803d;
+        }
+
+        .ota-banner.delay {
+            border-left: 4px solid #92400e;
+        }
+
+        .ota-banner.block {
+            border-left: 4px solid #b91c1c;
+        }
+
+        .ota-banner.retry {
+            border-left: 4px solid #1d4ed8;
+        }
+
+        .ota-banner .action {
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            color: #111827;
+        }
+
+        .ota-banner .confidence {
+            color: #374151;
+            margin-top: 4px;
+            font-size: 14px;
+        }
+
+        .ota-banner .section {
+            margin-top: 8px;
+            font-size: 14px;
+        }
+
+        .ota-banner .section b {
+            display: block;
+            margin-bottom: 4px;
+            color: #111827;
+        }
+
+        .ota-banner .section ul {
+            margin: 4px 0 0 16px;
+            padding: 0;
+            list-style: disc;
+        }
+
+        .ota-banner .section ul li {
+            color: #4b5563;
+            margin-bottom: 2px;
+        }
+
+        /* ===============================
+           Anomaly Event
+        ================================ */
+        .anomaly-event {
+            border-top: 1px solid #e5e7eb;
+            padding: 14px 0;
+        }
+
+        .anomaly-event:first-child {
+            border-top: none;
+        }
+
+        .timestamp {
+            color: #6b7280;
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+
+        .headline {
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #111827;
+            font-size: 15px;
+        }
+
+        .meta {
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #374151;
+        }
+
+        .meta div {
+            margin-bottom: 2px;
+        }
+
+        /* ===============================
+           Severity colors (text only)
+        ================================ */
+        .severity-high {
+            color: #b91c1c;
+            font-weight: 600;
+        }
+
+        .severity-medium {
+            color: #92400e;
+            font-weight: 600;
+        }
+
+        .severity-low {
+            color: #374151;
+            font-weight: 600;
+        }
+
+        /* ===============================
+           Sections
+        ================================ */
+        .section {
+            margin-top: 8px;
+            font-size: 14px;
+        }
+
+        .section b {
+            display: block;
+            margin-bottom: 2px;
+            color: #111827;
+        }
+
+        .section ul {
+            margin: 4px 0 0 16px;
+            padding: 0;
+            list-style: none;
+        }
+
+        .section ul li {
+            font-size: 13px;
+            color: #4b5563;
+            margin-bottom: 2px;
+        }
+
+        /* ===============================
+           OTA Recommendation Banner (Overview Tab)
+        ================================ */
+        .ota-recommendation-banner {
+            border: 1px solid #e5e7eb;
+            padding: 12px;
+            margin-bottom: 16px;
+            background: #f9fafb;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .ota-recommendation-banner.allow {
+            border-left: 4px solid #15803d;
+        }
+
+        .ota-recommendation-banner.delay {
+            border-left: 4px solid #92400e;
+        }
+
+        .ota-recommendation-banner.block {
+            border-left: 4px solid #b91c1c;
+        }
+
+        .ota-recommendation-banner.retry {
+            border-left: 4px solid #1d4ed8;
+        }
+
+        .ota-recommendation-banner .action {
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            color: #111827;
+            margin-bottom: 4px;
+        }
+
+        .ota-recommendation-banner .confidence {
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .ota-recommendation-banner .reason-section {
+            margin-top: 8px;
+        }
+
+        .ota-recommendation-banner .reason-section b {
+            display: block;
+            margin-bottom: 4px;
+            color: #111827;
+        }
+
+        .ota-recommendation-banner .reason-section ul {
+            margin-top: 4px;
+            margin-left: 16px;
+            padding: 0;
+            list-style: disc;
+        }
+
+        .ota-recommendation-banner .reason-section ul li {
+            color: #4b5563;
+            margin-bottom: 2px;
+            font-family: inherit;
+        }
+
+        .ota-recommendation-banner .footer {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #e5e7eb;
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .ota-recommendation-banner .footer a {
+            color: #2563eb;
+            text-decoration: underline;
+        }
+
+        .ota-recommendation-banner .footer a:hover {
+            color: #1d4ed8;
+        }
+    </style>
 </head>
 <body class="bg-white text-gray-900">
     <!-- Sidebar -->
@@ -75,7 +310,15 @@
 
             <div id="content-anomaly" class="tab-content hidden">
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                    <div id="anomalyContent">Loading...</div>
+                    <h2 class="section-title">Anomaly Timeline</h2>
+                    
+                    <!-- OTA Recommendation Banner -->
+                    <div id="ota-banner" class="ota-banner hidden"></div>
+                    
+                    <!-- Anomaly Events Container -->
+                    <div id="anomaly-timeline">
+                        <div class="loading">Loading anomaly events...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -196,9 +439,59 @@
             }
         }
 
+        // Load and render OTA Recommendation Banner (Overview tab)
+        async function loadOTARecommendationBanner() {
+            const banner = document.getElementById('otaRecommendationBanner');
+            if (!banner) return;
+
+            try {
+                const data = await api.devices.anomalies(deviceId, { limit: 1 });
+                const events = Array.isArray(data.data) ? data.data : [];
+
+                if (!events.length || !events[0].otaRecommendation) {
+                    banner.classList.add('hidden');
+                    return;
+                }
+
+                const latest = events[0];
+                const recommendation = latest.otaRecommendation;
+                const action = (recommendation.action || 'allow').toUpperCase();
+                const confidence = typeof recommendation.confidence === 'number' 
+                    ? Math.round(recommendation.confidence * 100) 
+                    : 0;
+                const reasons = recommendation.reason || [];
+                const timestamp = formatTime(latest.timestamp);
+
+                banner.className = `ota-recommendation-banner ${recommendation.action || 'allow'}`;
+                banner.innerHTML = `
+                    <div class="action">OTA Recommendation (Decision Support): ${action}</div>
+                    <div class="confidence">Confidence: ${confidence}%</div>
+                    ${reasons.length > 0 ? `
+                    <div class="reason-section">
+                        <b>Reason:</b>
+                        <ul>
+                            ${reasons.map(r => `<li>${r}</li>`).join('')}
+                        </ul>
+                    </div>
+                    ` : ''}
+                    <div class="footer">
+                        Last evaluated: ${timestamp}
+                        <a href="#" onclick="showTab('anomaly'); return false;">View details → Anomaly Timeline</a>
+                    </div>
+                `;
+                banner.classList.remove('hidden');
+            } catch (err) {
+                banner.classList.add('hidden');
+                console.warn('Failed to load OTA recommendation:', err);
+            }
+        }
+
         async function loadInfoTab(device) {
             document.getElementById('infoContent').innerHTML = `
                 <div class="space-y-4">
+                    <!-- OTA Recommendation Banner -->
+                    <div id="otaRecommendationBanner" class="ota-recommendation-banner hidden"></div>
+
                     <div class="grid grid-cols-2 gap-4">
                         <div>
                             <div class="text-sm text-gray-600">Device ID</div>
@@ -264,6 +557,9 @@
                     </div>
                 </div>
             `;
+
+            // Load OTA recommendation banner after rendering info tab
+            await loadOTARecommendationBanner();
         }
 
         async function loadTabData(tab) {
@@ -784,118 +1080,215 @@
             }
         }
 
-        async function loadAnomaly() {
-            try {
-                const data = await api.anomaly.get(deviceId);
-                const anomaly = data.data || {};
-                
-                // Defensive: safely extract score and threshold
-                // CRITICAL: Use anomalyScore field, never score field
-                const score = anomaly.anomalyScore ?? null; // Only use anomalyScore, ignore score
-                const threshold = typeof anomaly.threshold === 'number' ? anomaly.threshold : 0.5;
-                const backendIsAnomaly = anomaly.isAnomaly; // Backend is source of truth
-                
-                // Status logic: MUST trust backend isAnomaly flag
-                // Only recompute if backend flag is missing
-                let status = 'Unknown';
-                let isAnomaly = null;
-                
-                if (typeof backendIsAnomaly === 'boolean') {
-                    // Backend is source of truth - use its flag directly
-                    isAnomaly = backendIsAnomaly;
-                    status = backendIsAnomaly ? 'Anomaly' : 'Normal';
-                } else if (typeof score === 'number' && typeof threshold === 'number') {
-                    // Fallback: only compute if backend flag is missing
-                    isAnomaly = score >= threshold;
-                    status = isAnomaly ? 'Anomaly' : 'Normal';
+        // Format timestamp
+        function formatTime(ts) {
+            if (!ts) return '';
+            const d = new Date(ts);
+            return d.toLocaleString('en-US', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        }
+
+        // Engineering Report Style - Render OTA Banner
+        function renderOTABanner(recommendation, banner) {
+            if (!recommendation || !recommendation.action) {
+                banner.classList.add('hidden');
+                return;
+            }
+
+            const action = recommendation.action.toUpperCase();
+            const confidence = typeof recommendation.confidence === 'number' 
+                ? Math.round(recommendation.confidence * 100) 
+                : 0;
+            const reasons = recommendation.reason || [];
+
+            banner.className = `ota-banner ${recommendation.action}`;
+            banner.innerHTML = `
+                <div class="action">OTA Recommendation (Decision Support): ${action}</div>
+                <div class="confidence">Confidence: ${confidence}%</div>
+                ${reasons.length > 0 ? `
+                <div class="section">
+                    <b>Reason:</b>
+                    <ul>
+                        ${reasons.map(r => `<li>${r}</li>`).join('')}
+                    </ul>
+                </div>
+                ` : ''}
+            `;
+            banner.classList.remove('hidden');
+        }
+
+        // Render Anomaly Event (from persisted events only)
+        function renderAnomalyEvent(event) {
+            if (!event || !event.timestamp) {
+                return '';
+            }
+
+            const timestamp = formatTime(event.timestamp);
+            const score = typeof event.anomalyScore === 'number' ? event.anomalyScore.toFixed(2) : null;
+            const threshold = typeof event.threshold === 'number' ? event.threshold.toFixed(2) : null;
+
+            // Get first explanation if exists
+            const exp = event.explanations && event.explanations.length > 0 
+                ? event.explanations[0] 
+                : null;
+
+            // OTA Recommendation if exists
+            const otaRec = event.otaRecommendation;
+
+            // Build sections conditionally
+            let metaSection = '';
+            let explanationSection = '';
+            let evidenceSection = '';
+            let otaSection = '';
+
+            // Meta section (Category, Severity, Risk) - only if explanation exists
+            if (exp) {
+                const metaItems = [];
+                if (exp.category) {
+                    metaItems.push(`<div><b>Category:</b> ${exp.category}</div>`);
                 }
-
-                // Get historical anomaly data from logs/metrics for timeline
-                let timelineData = [];
-                try {
-                    const logsData = await api.logs.list({ deviceId, limit: 100 });
-                    const rawLogs = Array.isArray(logsData.data) ? logsData.data : [];
-                    
-                    // Normalize logs: map @timestamp to timestamp
-                    const normalizedLogs = rawLogs.map(log => ({
-                        id: log.id,
-                        timestamp: log['@timestamp'] || log.timestamp,
-                        deviceId: log.deviceId || log.device_id || 'N/A',
-                        level: log.level || 'info',
-                        message: log.message || '(empty message)',
-                    }));
-                    
-                    // Extract anomaly-related logs
-                    timelineData = normalizedLogs
-                        .filter(log => log.level === 'ERROR' || log.message?.toLowerCase().includes('anomaly'))
-                        .slice(0, 20)
-                        .map(log => ({
-                            time: log.timestamp,
-                            type: log.level,
-                            message: log.message || 'N/A'
-                        }));
-                } catch (err) {
-                    console.warn('Could not load timeline data:', err);
+                if (exp.severity) {
+                    metaItems.push(`<div><b>Severity:</b> <span class="severity-${exp.severity}">${exp.severity}</span></div>`);
                 }
+                if (exp.risk) {
+                    metaItems.push(`<div><b>Risk:</b> ${exp.risk}</div>`);
+                }
+                if (metaItems.length > 0) {
+                    metaSection = `<div class="meta">${metaItems.join('')}</div>`;
+                }
+            }
 
-                // Safe numeric rendering - NEVER call toFixed on null/undefined
-                const scoreText = typeof score === 'number' ? score.toFixed(4) : 'N/A';
-                const thresholdText = typeof threshold === 'number' ? threshold.toFixed(4) : 'N/A';
-                
-                // Status color based on computed status
-                const statusColor = status === 'Anomaly' ? 'text-red-800' : 
-                                   status === 'Normal' ? 'text-green-800' : 
-                                   'text-gray-800';
-                const scoreColor = status === 'Anomaly' ? 'text-red-600' : 
-                                  status === 'Normal' ? 'text-green-600' : 
-                                  'text-gray-500';
-
-                document.getElementById('anomalyContent').innerHTML = `
-                    <div class="space-y-4">
-                        <div class="grid grid-cols-2 gap-4">
-                            <div class="p-4 bg-gray-50 rounded border border-gray-200">
-                                <div class="text-sm text-gray-600">Current Score</div>
-                                <div class="text-2xl font-bold ${scoreColor}">${scoreText}</div>
-                            </div>
-                            <div class="p-4 bg-gray-50 rounded border border-gray-200">
-                                <div class="text-sm text-gray-600">Threshold</div>
-                                <div class="text-2xl font-bold text-gray-900">${thresholdText}</div>
-                            </div>
-                        </div>
-                        <div class="p-4 bg-gray-50 rounded border border-gray-200">
-                            <div class="text-sm text-gray-600 mb-2">Status</div>
-                            <div class="text-lg font-semibold ${statusColor}">
-                                ${status === 'Anomaly' ? 'Anomaly Detected' : 
-                                  status === 'Normal' ? 'Normal' : 
-                                  'Unknown'}
-                            </div>
-                        </div>
-                        <div class="p-4 bg-gray-50 rounded border border-gray-200">
-                            <div class="text-sm text-gray-600 mb-2">Explanation</div>
-                            <div class="text-gray-900">${anomaly.explanation || anomaly.message || 'No explanation available'}</div>
-                        </div>
-                        <div class="p-4 bg-white rounded border border-gray-200">
-                            <h4 class="text-sm font-semibold text-gray-900 mb-3">Anomaly Timeline</h4>
-                            <div class="space-y-2 max-h-96 overflow-y-auto">
-                                ${timelineData.length > 0 
-                                    ? timelineData.map(item => `
-                                        <div class="p-3 bg-gray-50 rounded text-sm border border-gray-200">
-                                            <div class="flex justify-between items-start mb-1">
-                                                <span class="text-gray-600">${ui.formatDate(item.time)}</span>
-                                                <span class="px-2 py-1 rounded text-xs ${item.type === 'ERROR' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}">${item.type}</span>
-                                            </div>
-                                            <div class="text-gray-900">${item.message}</div>
-                                        </div>
-                                    `).join('')
-                                    : '<div class="text-gray-500 text-sm text-center py-4">No anomaly events in timeline</div>'}
-                            </div>
-                        </div>
+            // Explanation section - only if interpretation exists
+            if (exp && exp.interpretation) {
+                explanationSection = `
+                    <div class="section">
+                        <b>Explanation:</b>
+                        <div>${exp.interpretation}</div>
                     </div>
                 `;
-            } catch (error) {
-                document.getElementById('anomalyContent').innerHTML = 
-                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
             }
+
+            // Evidence section - only if evidence exists
+            if (exp && exp.evidence && Object.keys(exp.evidence).length > 0) {
+                const evidenceItems = Object.entries(exp.evidence)
+                    .map(([k, v]) => {
+                        let formattedValue = v;
+                        if (typeof v === 'number') {
+                            if (k.includes('pct') || k.includes('percent')) {
+                                formattedValue = `${v.toFixed(1)}`;
+                            } else if (k.includes('ms') || k.includes('latency')) {
+                                formattedValue = `${v.toFixed(0)}`;
+                            } else if (k.includes('mb') || k.includes('storage')) {
+                                formattedValue = `${v.toFixed(0)}`;
+                            } else if (k.includes('rssi') || k.includes('dbm')) {
+                                formattedValue = `${v.toFixed(0)}`;
+                            } else {
+                                formattedValue = v.toFixed(2);
+                            }
+                        }
+                        return `<li>${k}: ${formattedValue}</li>`;
+                    })
+                    .join('');
+
+                evidenceSection = `
+                    <div class="section">
+                        <b>Evidence:</b>
+                        <ul>
+                            ${evidenceItems}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            // OTA Recommendation section - only if exists
+            if (otaRec && otaRec.action) {
+                const action = otaRec.action.toUpperCase();
+                const confidence = typeof otaRec.confidence === 'number' 
+                    ? Math.round(otaRec.confidence * 100) 
+                    : 0;
+                const reasons = otaRec.reason || [];
+
+                let reasonsHtml = '';
+                if (reasons.length > 0) {
+                    reasonsHtml = `
+                        <ul>
+                            ${reasons.map(r => `<li>${r}</li>`).join('')}
+                        </ul>
+                    `;
+                }
+
+                otaSection = `
+                    <div class="section">
+                        <b>OTA Recommendation (Decision Support):</b>
+                        <div>${action}${confidence > 0 ? ` (${confidence}%)` : ''}</div>
+                        ${reasonsHtml}
+                    </div>
+                `;
+            }
+
+            // Build headline with score/threshold
+            let headline = 'Anomaly detected';
+            if (score !== null && threshold !== null) {
+                headline = `Anomaly detected (score: ${score} / threshold: ${threshold})`;
+            } else if (score !== null) {
+                headline = `Anomaly detected (score: ${score})`;
+            }
+
+            return `
+                <div class="anomaly-event">
+                    <div class="timestamp">[${timestamp}]</div>
+                    <div class="headline">${headline}</div>
+                    ${metaSection}
+                    ${explanationSection}
+                    ${evidenceSection}
+                    ${otaSection}
+                </div>
+            `;
+        }
+
+        // Load anomalies (lazy loading - only when tab is opened)
+        async function loadAnomalies(deviceId) {
+            const container = document.getElementById('anomaly-timeline');
+            const otaBanner = document.getElementById('ota-banner');
+
+            try {
+                const data = await api.devices.anomalies(deviceId);
+                const events = Array.isArray(data.data) ? data.data : [];
+
+                if (!events.length) {
+                    container.innerHTML = '<div class="loading">No anomaly events recorded.</div>';
+                    otaBanner.classList.add('hidden');
+                    return;
+                }
+
+                // === OTA Banner (use latest event) ===
+                const latest = events[0];
+                if (latest.otaRecommendation) {
+                    renderOTABanner(latest.otaRecommendation, otaBanner);
+                } else {
+                    otaBanner.classList.add('hidden');
+                }
+
+                // === Render anomaly timeline ===
+                container.innerHTML = events.map(renderAnomalyEvent).join('');
+
+            } catch (err) {
+                container.innerHTML = '<div class="loading">Failed to load anomaly events.</div>';
+                otaBanner.classList.add('hidden');
+                console.error('Failed to load anomalies:', err);
+            }
+        }
+
+        // Alias for backward compatibility
+        async function loadAnomaly() {
+            await loadAnomalies(deviceId);
         }
 
         // WebSocket updates
