@@ -62,6 +62,7 @@ export const api = {
     get: (id) => api.get(`/devices/${id}`),
     stats: () => api.get('/devices/stats'),
     assignFirmware: (deviceId, firmwareVersion) => api.patch(`/devices/${deviceId}/assign-firmware`, { firmwareVersion }),
+    anomalies: (deviceId, params) => api.get(`/devices/${deviceId}/anomalies`, params),
   },
 
   firmware: {
@@ -79,6 +80,7 @@ export const api = {
 
   anomaly: {
     get: (deviceId) => api.get(`/anomaly/${deviceId}`),
+    history: (deviceId, params) => api.get(`/anomaly/${deviceId}/history`, params),
   },
 
   ota: {
