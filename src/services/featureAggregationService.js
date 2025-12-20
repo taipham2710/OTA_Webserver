@@ -16,7 +16,7 @@ const __dirname = dirname(__filename);
  * Load feature list from feature_list.json
  * MVP aggregation: Strict feature compatibility with trained model
  * Safe defaults for online inference
- * 
+ *
  * NOTE: In container, ensure feature_list.json is mounted at /app/feature_list.json
  * If file doesn't exist, featureList = null and validation is skipped.
  * Since we hard-init all 83 features, inference will still work correctly.
@@ -29,10 +29,10 @@ try {
     '/app/feature_list.json',                     // Container: mounted at /app
     join(process.cwd(), 'feature_list.json'),    // Current working directory
   ];
-  
+
   let featureListPath = null;
   let featureListContent = null;
-  
+
   // Find first existing file
   for (const path of possiblePaths) {
     try {
@@ -45,7 +45,7 @@ try {
       continue;
     }
   }
-  
+
   if (featureListContent) {
     featureList = JSON.parse(featureListContent);
     if (!Array.isArray(featureList)) {
@@ -150,14 +150,14 @@ const trendSlope = (values) => {
   if (!values || values.length === 0) return 0;
   const filtered = values.filter(v => v !== null && v !== undefined && !isNaN(v));
   if (filtered.length < 2) return 0;
-  
+
   const n = filtered.length;
   const x = Array.from({ length: n }, (_, i) => i);
   const sumX = x.reduce((a, b) => a + b, 0);
   const sumY = filtered.reduce((a, b) => a + b, 0);
   const sumXY = x.reduce((sum, xi, i) => sum + xi * filtered[i], 0);
   const sumXX = x.reduce((sum, xi) => sum + xi * xi, 0);
-  
+
   const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
   return isNaN(slope) ? 0 : slope;
 };
@@ -170,11 +170,11 @@ const spikeRatio = (values) => {
   if (!values || values.length === 0) return 0;
   const filtered = values.filter(v => v !== null && v !== undefined && !isNaN(v));
   if (filtered.length === 0) return 0;
-  
+
   const avg = mean(filtered);
   const stdDev = std(filtered);
   const threshold = avg + 2 * stdDev;
-  
+
   const spikeCount = filtered.filter(v => v > threshold).length;
   return (spikeCount / filtered.length) * 100;
 };
@@ -204,7 +204,7 @@ const rateOfChange = (values, timeWindowMinutes) => {
 // ============================================================================
 // MVP aggregation: Strict feature compatibility with trained model
 // Safe defaults for online inference - never throws errors
-// 
+//
 // This service aggregates features from multiple data sources:
 // - Metrics: InfluxDB (cpu, memory, temperature, battery, storage, uptime, network)
 // - Logs: Elasticsearch (error counts per minute buckets)
@@ -217,18 +217,18 @@ const rateOfChange = (values, timeWindowMinutes) => {
 
 /**
  * Build complete feature vector for anomaly detection
- * 
+ *
  * MVP aggregation: Strict feature compatibility with trained model
  * Safe defaults for online inference - never throws errors
- * 
+ *
  * This service aggregates features from multiple data sources:
  * - Metrics: InfluxDB (cpu, memory, temperature, battery, storage, uptime, network)
  * - Logs: Elasticsearch (error counts)
  * - OTA state: MongoDB (device status, OTA history)
- * 
+ *
  * All features must exactly match feature_list.json (83 features total)
  * Missing data is handled with safe defaults (0 or false)
- * 
+ *
  * @param {string} deviceId - Device identifier
  * @param {object} options - Optional configuration
  * @param {number} options.windowMinutes - Time window in minutes (default: 15)
@@ -702,10 +702,10 @@ export const buildFeatureVector = async (deviceId, options = {}) => {
           // Process events to calculate duration in each state
           for (let i = 0; i < otaEvents.length; i++) {
             const event = otaEvents[i];
-            const eventTime = event.timestamp ? new Date(event.timestamp).getTime() : 
+            const eventTime = event.timestamp ? new Date(event.timestamp).getTime() :
                             (event.deployedAt ? new Date(event.deployedAt).getTime() : windowStart.getTime());
-            const nextEventTime = i < otaEvents.length - 1 
-              ? (otaEvents[i + 1].timestamp ? new Date(otaEvents[i + 1].timestamp).getTime() : 
+            const nextEventTime = i < otaEvents.length - 1
+              ? (otaEvents[i + 1].timestamp ? new Date(otaEvents[i + 1].timestamp).getTime() :
                  (otaEvents[i + 1].deployedAt ? new Date(otaEvents[i + 1].deployedAt).getTime() : now.getTime()))
               : now.getTime();
             const duration = Math.max(0, Math.min(nextEventTime - eventTime, windowDurationMs));
@@ -732,15 +732,17 @@ export const buildFeatureVector = async (deviceId, options = {}) => {
           features.ota_error_count = errorCount;
           features.ota_error_pct = (errorCount / otaEvents.length) * 100;
         } else {
-          // No OTA events in window, fallback to current status
-          const otaStatus = (device.otaStatus || 'completed').toLowerCase();
-          if (otaStatus === 'pending' || otaStatus === 'updating') {
+          // No OTA events in window, fallback to current firmware status
+          // Read from new device.firmware.status schema
+          const firmwareStatus = (device.firmware?.status || 'idle').toLowerCase();
+          if (firmwareStatus === 'pending' || firmwareStatus === 'downloading' || firmwareStatus === 'updating') {
             features.ota_updating_pct = 100;
-          } else if (otaStatus === 'failed') {
+          } else if (firmwareStatus === 'failed') {
             features.ota_fail_pct = 100;
             features.ota_error_count = 1;
             features.ota_error_pct = 100;
           } else {
+            // idle, success, or unknown → treat as idle/completed
             features.ota_idle_pct = 100;
             features.ota_success_pct = 100;
           }
