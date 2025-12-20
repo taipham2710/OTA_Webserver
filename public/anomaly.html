@@ -12,7 +12,7 @@
             <a href="/" class="text-blue-600 hover:underline">← Back to Dashboard</a>
         </div>
         <h1 class="text-3xl font-bold mb-6">Anomaly Analysis</h1>
-        
+
         <div class="bg-white rounded-lg shadow p-6 mb-6">
             <form id="queryForm" class="space-y-4">
                 <div>
@@ -20,7 +20,7 @@
                     <input type="text" id="deviceId" name="deviceId" placeholder="Enter device ID" required
                         class="block w-full px-3 py-2 border border-gray-300 rounded-md">
                 </div>
-                <button type="submit" 
+                <button type="submit"
                     class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
                     Analyze Anomalies
                 </button>
@@ -46,7 +46,8 @@
             }
 
             try {
-                const response = await fetch(`/api/anomaly/${encodeURIComponent(deviceId)}`);
+                // ARCHITECTURE: Use /analyze endpoint for manual analysis (does not update production state)
+                const response = await fetch(`/api/anomaly/${encodeURIComponent(deviceId)}/analyze`);
                 const data = await response.json();
                 const resultDiv = document.getElementById('result');
                 const resultContent = document.getElementById('resultContent');
@@ -56,7 +57,7 @@
                     // CRITICAL: Use anomalyScore field, never score field
                     const score = result.anomalyScore ?? null; // Only use anomalyScore
                     const threshold = typeof result.threshold === 'number' ? result.threshold : 0.5;
-                    
+
                     // CRITICAL: Trust backend isAnomaly flag, don't recompute
                     let isAnomaly = null;
                     if (typeof result.isAnomaly === 'boolean') {
@@ -66,7 +67,7 @@
                         // Fallback: only compute if backend flag is missing
                         isAnomaly = score >= threshold;
                     }
-                    
+
                     resultContent.innerHTML = `
                         <div class="space-y-4">
                             <div class="grid grid-cols-2 gap-4">
@@ -96,7 +97,7 @@
                     resultDiv.classList.remove('hidden');
                 }
             } catch (error) {
-                document.getElementById('resultContent').innerHTML = 
+                document.getElementById('resultContent').innerHTML =
                     `<div class="text-red-600">Error: ${error.message}</div>`;
                 document.getElementById('result').classList.remove('hidden');
             }
@@ -104,4 +105,3 @@
     </script>
 </body>
 </html>
-
