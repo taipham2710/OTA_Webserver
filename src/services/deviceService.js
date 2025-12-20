@@ -1,7 +1,6 @@
 import { getDb } from '../clients/mongodb.js';
 import { getElasticsearchClient } from '../clients/elasticsearch.js';
 import { getQueryApi } from '../clients/influxdb.js';
-import { getAnomalyAnalysis } from './anomalyService.js';
 import { config } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
 
@@ -61,10 +60,10 @@ export const getDevices = async (queryParams = {}) => {
   try {
     const db = await getDb();
     const collection = db.collection('devices');
-    
+
     const { status, limit = 100, skip = 0 } = queryParams;
     const filter = {};
-    
+
     if (status) filter.status = status;
 
     const devices = await collection
@@ -100,11 +99,39 @@ export const getDevices = async (queryParams = {}) => {
             ? 'active'
             : 'inactive';
 
+        // Normalize OTA fields from device.firmware{} schema
+        const otaStatus = device.firmware?.status || 'idle';
+        const firmwareVersion = device.firmware?.currentVersion || null;
+
+        // Read anomaly state from devices collection (single source of truth)
+        // DO NOT compute anomaly here - it's updated by anomalyController after ML inference
+        const isAnomaly = device.isAnomaly === true;
+        const anomalyScore = device.anomalyScore ?? null;
+        const anomalyThreshold = device.anomalyThreshold ?? null;
+        const anomalyUpdatedAt = device.anomalyUpdatedAt ?? null;
+
+        // Destructure to exclude legacy fields
+        const {
+          otaStatus: _legacyOtaStatus,
+          firmwareVersion: _legacyFirmwareVersion,
+          targetFirmwareVersion: _legacyTargetFirmwareVersion,
+          firmwareAssignedAt: _legacyFirmwareAssignedAt,
+          ...deviceWithoutLegacy
+        } = device;
+
         return {
           id: device._id.toString(),
-          ...device,
+          ...deviceWithoutLegacy,
           lastSeenAt: lastSeenAt ? lastSeenAt.toISOString() : (device.lastSeenAt || device.createdAt || new Date()).toISOString(),
           status: computedStatus,
+          // Normalized OTA fields (derived from device.firmware{})
+          otaStatus,
+          firmwareVersion,
+          // Anomaly state (read from devices collection, single source of truth)
+          isAnomaly,
+          anomalyScore,
+          anomalyThreshold,
+          anomalyUpdatedAt,
           _id: undefined,
         };
       })
@@ -120,16 +147,32 @@ export const getDeviceById = async (deviceId) => {
   try {
     const db = await getDb();
     const collection = db.collection('devices');
-    
+
     const device = await collection.findOne({ deviceId });
-    
+
     if (!device) {
       throw new AppError('Device not found', 404);
     }
 
+    // Normalize OTA fields from device.firmware{} schema
+    const otaStatus = device.firmware?.status || 'idle';
+    const firmwareVersion = device.firmware?.currentVersion || null;
+
+    // Destructure to exclude legacy fields
+    const {
+      otaStatus: _legacyOtaStatus,
+      firmwareVersion: _legacyFirmwareVersion,
+      targetFirmwareVersion: _legacyTargetFirmwareVersion,
+      firmwareAssignedAt: _legacyFirmwareAssignedAt,
+      ...deviceWithoutLegacy
+    } = device;
+
     const deviceData = {
       id: device._id.toString(),
-      ...device,
+      ...deviceWithoutLegacy,
+      // Normalized OTA fields (derived from device.firmware{})
+      otaStatus,
+      firmwareVersion,
       _id: undefined,
     };
 
@@ -177,19 +220,12 @@ export const getDeviceById = async (deviceId) => {
       deviceData.metricCount = 0;
     }
 
-    // Get anomaly score from FastAPI inference service
-    try {
-      const anomalyData = await getAnomalyAnalysis(deviceId);
-      deviceData.anomalyScore = anomalyData.anomalyScore ?? null;
-      deviceData.anomalyThreshold = anomalyData.threshold ?? null;
-      deviceData.isAnomaly = anomalyData.isAnomaly ?? false;
-    } catch (error) {
-      // NOTE: Temporary fallback for MVP/demo stability.
-      // Should be replaced with strict failure handling in production.
-      deviceData.anomalyScore = null;
-      deviceData.anomalyThreshold = null;
-      deviceData.isAnomaly = false;
-    }
+    // Read anomaly state from devices collection (single source of truth)
+    // DO NOT compute anomaly here - it's updated by anomalyController after ML inference
+    deviceData.isAnomaly = device.isAnomaly === true;
+    deviceData.anomalyScore = device.anomalyScore ?? null;
+    deviceData.anomalyThreshold = device.anomalyThreshold ?? null;
+    deviceData.anomalyUpdatedAt = device.anomalyUpdatedAt ?? null;
 
     // ===== Compute runtime lastSeen & status =====
     const lastLogTime = await getLastLogTimestamp(deviceId);
@@ -248,37 +284,44 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
 
     console.log('Searching for device with deviceId:', normalizedDeviceId);
     let device = await devicesCollection.findOne({ deviceId: normalizedDeviceId });
-    
+
     if (!device) {
-      device = await devicesCollection.findOne({ 
-        deviceId: { $regex: `^\\s*${normalizedDeviceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, $options: 'i' } 
+      device = await devicesCollection.findOne({
+        deviceId: { $regex: `^\\s*${normalizedDeviceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, $options: 'i' }
       });
     }
-    
+
     if (!device) {
       console.log('Device not found with deviceId:', normalizedDeviceId);
       const allDevices = await devicesCollection.find({}).limit(5).toArray();
-      console.log('Sample devices in collection (first 5):', allDevices.map(d => ({ 
-        _id: d._id?.toString(), 
+      console.log('Sample devices in collection (first 5):', allDevices.map(d => ({
+        _id: d._id?.toString(),
         deviceId: d.deviceId,
-        deviceIdType: typeof d.deviceId 
+        deviceIdType: typeof d.deviceId
       })));
       throw new AppError('Device not found', 404);
     }
-    
+
     console.log('Device found, updating...');
     const query = { deviceId: normalizedDeviceId };
     console.log('Query filter:', query);
 
+    // Get current firmware version (if exists) - ONLY from device.firmware{}
+    const currentVersion = device.firmware?.currentVersion || null;
+
+    // Update device with new firmware{} schema ONLY
     const updateResult = await devicesCollection.updateOne(
       { deviceId: normalizedDeviceId },
       {
         $set: {
-          firmwareVersion: firmwareVersion,
-          targetFirmwareVersion: firmwareVersion,
-          otaStatus: 'pending',
-          firmwareAssignedAt: new Date(),
+          'firmware.desiredVersion': firmwareVersion,
+          'firmware.status': 'pending',
+          'firmware.assignedAt': new Date(),
           updatedAt: new Date(),
+        },
+        // Only set currentVersion if it doesn't exist
+        $setOnInsert: {
+          'firmware.currentVersion': currentVersion,
         },
       }
     );
@@ -286,7 +329,7 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
     console.log('updateOne result:', updateResult);
     console.log('Matched count:', updateResult.matchedCount);
     console.log('Modified count:', updateResult.modifiedCount);
-    
+
     if (updateResult.matchedCount === 0) {
       throw new AppError('Device not found', 404);
     }
@@ -298,7 +341,7 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
     if (!updatedDevice) {
       throw new AppError('Device update failed', 500);
     }
-    
+
     console.log('Device found and updated successfully');
 
     const deviceData = {
@@ -323,13 +366,13 @@ export const reportDeviceFirmware = async (deviceId, reportedFirmwareVersion, st
     const devicesCollection = db.collection('devices');
 
     let device = await devicesCollection.findOne({ deviceId: normalizedDeviceId });
-    
+
     if (!device) {
-      device = await devicesCollection.findOne({ 
-        deviceId: { $regex: `^\\s*${normalizedDeviceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, $options: 'i' } 
+      device = await devicesCollection.findOne({
+        deviceId: { $regex: `^\\s*${normalizedDeviceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, $options: 'i' }
       });
     }
-    
+
     if (!device) {
       throw new AppError('Device not found', 404);
     }
@@ -343,12 +386,17 @@ export const reportDeviceFirmware = async (deviceId, reportedFirmwareVersion, st
       lastSeenAt: new Date(),
     };
 
+    // Update firmware{} schema based on reported status
     if (status === 'failed') {
-      updateFields.otaStatus = 'failed';
-    } else if (device.targetFirmwareVersion && reportedFirmwareVersion === device.targetFirmwareVersion) {
-      updateFields.firmwareVersion = reportedFirmwareVersion;
-      updateFields.targetFirmwareVersion = null;
-      updateFields.otaStatus = 'completed';
+      updateFields['firmware.status'] = 'failed';
+    } else if (device.firmware?.desiredVersion && reportedFirmwareVersion === device.firmware.desiredVersion) {
+      // OTA completed successfully
+      updateFields['firmware.currentVersion'] = reportedFirmwareVersion;
+      updateFields['firmware.desiredVersion'] = null;
+      updateFields['firmware.status'] = 'success';
+    } else if (status === 'ok' && device.firmware?.desiredVersion) {
+      // Device is downloading/updating
+      updateFields['firmware.status'] = 'downloading';
     }
 
     await devicesCollection.updateOne(
@@ -386,13 +434,13 @@ export const retryOTAForDevice = async (deviceId) => {
     const devicesCollection = db.collection('devices');
 
     let device = await devicesCollection.findOne({ deviceId: normalizedDeviceId });
-    
+
     if (!device) {
-      device = await devicesCollection.findOne({ 
-        deviceId: { $regex: `^\\s*${normalizedDeviceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, $options: 'i' } 
+      device = await devicesCollection.findOne({
+        deviceId: { $regex: `^\\s*${normalizedDeviceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, $options: 'i' }
       });
     }
-    
+
     if (!device) {
       throw new AppError('Device not found', 404);
     }
@@ -401,11 +449,13 @@ export const retryOTAForDevice = async (deviceId) => {
       throw new AppError('Device is not active', 403);
     }
 
-    if (device.otaStatus !== 'failed') {
-      throw new AppError('OTA retry is only allowed when otaStatus is "failed"', 400);
+    // Check firmware status using new schema
+    const firmwareStatus = device.firmware?.status;
+    if (firmwareStatus !== 'failed') {
+      throw new AppError('OTA retry is only allowed when firmware.status is "failed"', 400);
     }
 
-    if (!device.targetFirmwareVersion) {
+    if (!device.firmware?.desiredVersion) {
       throw new AppError('No target firmware version found for retry', 400);
     }
 
@@ -413,8 +463,8 @@ export const retryOTAForDevice = async (deviceId) => {
       { deviceId: normalizedDeviceId },
       {
         $set: {
-          otaStatus: 'pending',
-          firmwareAssignedAt: new Date(),
+          'firmware.status': 'pending',
+          'firmware.assignedAt': new Date(),
           updatedAt: new Date(),
         },
       }
