@@ -1,6 +1,7 @@
 import { getDevices, getDeviceById, assignFirmwareToDevice, reportDeviceFirmware, retryOTAForDevice } from '../services/deviceService.js';
 import { validateDeviceId, validateQueryParams } from '../utils/validators.js';
 import { AppError } from '../utils/errors.js';
+import { getOTAEvents } from '../services/otaEventService.js';
 
 export const getDevicesHandler = async (req, res, next) => {
   try {
@@ -110,6 +111,21 @@ export const retryOTAForDeviceHandler = async (req, res, next) => {
       success: true,
       data: updatedDevice,
       message: 'OTA retry initiated successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getOTAEventsHandler = async (req, res, next) => {
+  try {
+    const deviceId = validateDeviceId(req.params.deviceId);
+    const events = await getOTAEvents(deviceId);
+
+    res.json({
+      success: true,
+      data: events,
+      count: events.length,
     });
   } catch (error) {
     next(error);

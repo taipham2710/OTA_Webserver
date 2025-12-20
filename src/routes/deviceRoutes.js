@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDevicesHandler, getDeviceByIdHandler, assignFirmwareToDeviceHandler, reportDeviceFirmwareHandler, retryOTAForDeviceHandler } from '../controllers/deviceController.js';
+import { getDevicesHandler, getDeviceByIdHandler, assignFirmwareToDeviceHandler, reportDeviceFirmwareHandler, retryOTAForDeviceHandler, getOTAEventsHandler } from '../controllers/deviceController.js';
 import { getDeviceStatisticsHandler } from '../controllers/deviceStatsController.js';
 import { getAnomaliesHistoryHandler } from '../controllers/anomalyController.js';
 import { authenticateDevice } from '../middleware/deviceAuth.js';
@@ -10,6 +10,7 @@ const router = express.Router();
 router.get('/stats', getDeviceStatisticsHandler);
 router.get('/', getDevicesHandler);
 router.get('/:deviceId/anomalies', getAnomaliesHistoryHandler);
+router.get('/:deviceId/ota-events', getOTAEventsHandler);
 router.patch('/:deviceId/assign-firmware', assignFirmwareToDeviceHandler);
 router.post('/:deviceId/retry-ota', retryOTAForDeviceHandler);
 router.post('/:deviceId/report', rateLimitDevice(60, 60000), authenticateDevice, reportDeviceFirmwareHandler);
