@@ -78,4 +78,3 @@ export const buildOTARecommendation = (explanations = []) => {
     reason: ['No blocking conditions detected'],
   };
 };
-
