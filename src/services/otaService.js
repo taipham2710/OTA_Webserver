@@ -114,6 +114,29 @@ export const assignOTA = async (assignmentData) => {
         }
 
         // ========================================================================
+        // RETRY POLICY ENFORCEMENT (BLOCK AFTER 3 FAILURES)
+        // ========================================================================
+        const failureCount = device.firmware?.failureCount || 0;
+        const lastFailedFirmwareVersion = device.firmware?.lastFailedFirmwareVersion || null;
+        
+        // Block if failureCount >= 3 and trying to assign same firmwareVersion
+        if (failureCount >= 3) {
+          // Check if we're trying to assign the same firmware version that failed
+          const isRetryingSameVersion = lastFailedFirmwareVersion === firmwareVersion || 
+                                       (device.firmware?.desiredVersion === firmwareVersion && !lastFailedFirmwareVersion);
+          
+          if (isRetryingSameVersion) {
+            results.push({
+              deviceId: normalizedDeviceId,
+              success: false,
+              error: 'OTA blocked after repeated failures',
+            });
+            failedCount++;
+            continue;
+          }
+        }
+
+        // ========================================================================
         // OTA DECISION ENFORCEMENT
         // ========================================================================
         let otaDecision = { action: 'delay' }; // Default to delay if decision cannot be obtained (fail-closed)
@@ -161,15 +184,26 @@ export const assignOTA = async (assignmentData) => {
         // Decision enforcement: delay → "pending", allow → "assigned"
         const firmwareStatus = otaDecision.action === 'delay' ? 'pending' : 'assigned';
 
+        // Reset failureCount if assigning different firmware version (fresh start)
+        const updatePayload = {
+          'firmware.desiredVersion': firmware.version,
+          'firmware.status': firmwareStatus,
+          'firmware.assignedAt': new Date(),
+          updatedAt: new Date(),
+        };
+        
+        // Reset failure tracking if assigning different firmware version
+        const lastFailedVersion = device.firmware?.lastFailedFirmwareVersion || null;
+        if (lastFailedVersion && lastFailedVersion !== firmware.version) {
+          updatePayload['firmware.failureCount'] = 0;
+          updatePayload['firmware.lastFailedFirmwareVersion'] = null;
+          updatePayload['firmware.lastFailureReason'] = null;
+        }
+
         const updateResult = await devicesCollection.updateOne(
           { deviceId: normalizedDeviceId },
           {
-            $set: {
-              'firmware.desiredVersion': firmware.version,
-              'firmware.status': firmwareStatus,
-              'firmware.assignedAt': new Date(),
-              updatedAt: new Date(),
-            },
+            $set: updatePayload,
             // Only set currentVersion if it doesn't exist
             $setOnInsert: {
               'firmware.currentVersion': currentVersion,
