@@ -450,6 +450,46 @@ export const reportDeviceFirmware = async (deviceId, reportedFirmwareVersion, ot
       throw new AppError(`otaStatus is required and must be one of: ${validOtaStatuses.join(', ')}`, 400);
     }
 
+    // ========================================================================
+    // OTA STATE TRANSITION GUARD (STRICT - EXECUTES BEFORE ANY UPDATES)
+    // ========================================================================
+    const currentFirmwareStatus = device.firmware?.status || 'idle';
+
+    // Define allowed transitions: from → to
+    const allowedTransitions = {
+      'assigned': ['downloading'],
+      'downloading': ['updating'],
+      'updating': ['success', 'failed'],
+    };
+
+    // Reject if current status is terminal or invalid for OTA reports
+    const invalidStatusesForReport = ['idle', 'pending', 'success', 'failed'];
+    if (invalidStatusesForReport.includes(currentFirmwareStatus)) {
+      throw new AppError(
+        `Invalid OTA state transition: cannot report OTA progress when firmware.status is "${currentFirmwareStatus}". ` +
+        `Device must be in "assigned", "downloading", or "updating" state to report OTA progress.`,
+        400
+      );
+    }
+
+    // Validate transition is allowed
+    const allowedNextStatuses = allowedTransitions[currentFirmwareStatus];
+    if (!allowedNextStatuses) {
+      throw new AppError(
+        `Invalid OTA state transition: current firmware.status "${currentFirmwareStatus}" does not allow OTA reports. ` +
+        `Only transitions from "assigned", "downloading", or "updating" are allowed.`,
+        400
+      );
+    }
+
+    if (!allowedNextStatuses.includes(otaStatus)) {
+      throw new AppError(
+        `Invalid OTA state transition: cannot transition from "${currentFirmwareStatus}" to "${otaStatus}". ` +
+        `Allowed transitions from "${currentFirmwareStatus}": ${allowedNextStatuses.join(', ')}.`,
+        400
+      );
+    }
+
     const updateFields = {
       reportedFirmwareVersion: reportedFirmwareVersion,
       lastSeenAt: new Date(),
