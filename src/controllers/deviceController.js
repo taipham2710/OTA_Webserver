@@ -74,7 +74,7 @@ export const assignFirmwareToDeviceHandler = async (req, res, next) => {
 export const reportDeviceFirmwareHandler = async (req, res, next) => {
   try {
     const { deviceId } = req.params;
-    const { reportedFirmwareVersion, status } = req.body;
+    const { reportedFirmwareVersion, otaStatus } = req.body;
 
     if (!deviceId || typeof deviceId !== 'string') {
       throw new AppError('Device ID is required', 400);
@@ -84,11 +84,7 @@ export const reportDeviceFirmwareHandler = async (req, res, next) => {
       throw new AppError('reportedFirmwareVersion is required', 400);
     }
 
-    if (status && status !== 'ok' && status !== 'failed') {
-      throw new AppError('status must be "ok" or "failed"', 400);
-    }
-
-    const updatedDevice = await reportDeviceFirmware(deviceId, reportedFirmwareVersion, status);
+    const updatedDevice = await reportDeviceFirmware(deviceId, reportedFirmwareVersion, otaStatus);
 
     res.json({
       success: true,

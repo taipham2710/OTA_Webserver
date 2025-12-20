@@ -1,5 +1,9 @@
 import { getDb } from '../clients/mongodb.js';
 import { AppError } from '../utils/errors.js';
+import { getAnomalyAnalysis } from './anomalyService.js';
+import { buildAnomalyExplanations } from './anomalyExplanationService.js';
+import { buildOTARecommendation } from './otaDecisionService.js';
+import { logOTAEvent } from './otaEventService.js';
 
 /**
  * Assign firmware to multiple devices using the new device.firmware{} schema
@@ -80,14 +84,89 @@ export const assignOTA = async (assignmentData) => {
 
         // Get current firmware version (if exists) - ONLY from device.firmware{}
         const currentVersion = device.firmware?.currentVersion || null;
+        const currentFirmwareStatus = device.firmware?.status || 'idle';
 
-        // Update device with new firmware{} schema ONLY
+        // ========================================================================
+        // STATE CONSISTENCY GUARDS
+        // ========================================================================
+        // Guard 1: Cannot assign firmware older than currentVersion
+        // NOTE: Using simple string comparison. For semantic versions (e.g., "1.10.0" vs "1.2.0"),
+        // this may not work correctly. Consider using a semver library if versions follow semantic versioning.
+        if (currentVersion && firmwareVersion < currentVersion) {
+          results.push({
+            deviceId: normalizedDeviceId,
+            success: false,
+            error: `Cannot assign firmware version ${firmwareVersion} older than current version ${currentVersion}`,
+          });
+          failedCount++;
+          continue;
+        }
+
+        // Guard 2: Cannot assign if status = updating
+        if (currentFirmwareStatus === 'updating') {
+          results.push({
+            deviceId: normalizedDeviceId,
+            success: false,
+            error: 'Cannot assign firmware while device is updating',
+          });
+          failedCount++;
+          continue;
+        }
+
+        // ========================================================================
+        // OTA DECISION ENFORCEMENT
+        // ========================================================================
+        let otaDecision = { action: 'delay' }; // Default to delay if decision cannot be obtained (fail-closed)
+        try {
+          // Get anomaly analysis and OTA recommendation
+          const anomalyAnalysis = await getAnomalyAnalysis(normalizedDeviceId);
+          const explanations = buildAnomalyExplanations(anomalyAnalysis.features || {});
+          otaDecision = buildOTARecommendation(explanations);
+        } catch (decisionError) {
+          // If decision cannot be obtained, log warning and use fail-closed default (delay)
+          console.warn(`Failed to get OTA decision for device ${normalizedDeviceId}: ${decisionError.message}`);
+        }
+
+        // Enforce decision
+        if (otaDecision.action === 'block') {
+          results.push({
+            deviceId: normalizedDeviceId,
+            success: false,
+            error: `OTA assignment blocked: ${otaDecision.reason?.join(', ') || 'Anomaly detected'}`,
+          });
+          failedCount++;
+          continue;
+        }
+
+        // ========================================================================
+        // LOG OTA EVENT (assign)
+        // ========================================================================
+        await logOTAEvent({
+          deviceId: normalizedDeviceId,
+          firmwareVersion: firmware.version,
+          action: 'assign',
+          source: 'admin',
+          reason: otaDecision.action === 'delay' 
+            ? `OTA delayed: ${otaDecision.reason?.join(', ') || 'Device unstable'}` 
+            : null,
+          metadata: {
+            decision: otaDecision.action,
+            confidence: otaDecision.confidence,
+          },
+        });
+
+        // ========================================================================
+        // UPDATE DEVICE STATE
+        // ========================================================================
+        // Decision enforcement: delay → "pending", allow → "assigned"
+        const firmwareStatus = otaDecision.action === 'delay' ? 'pending' : 'assigned';
+
         const updateResult = await devicesCollection.updateOne(
           { deviceId: normalizedDeviceId },
           {
             $set: {
               'firmware.desiredVersion': firmware.version,
-              'firmware.status': 'pending',
+              'firmware.status': firmwareStatus,
               'firmware.assignedAt': new Date(),
               updatedAt: new Date(),
             },

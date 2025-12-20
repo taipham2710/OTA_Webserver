@@ -3,6 +3,10 @@ import { getElasticsearchClient } from '../clients/elasticsearch.js';
 import { getQueryApi } from '../clients/influxdb.js';
 import { config } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
+import { logOTAEvent } from './otaEventService.js';
+import { getAnomalyAnalysis } from './anomalyService.js';
+import { buildAnomalyExplanations } from './anomalyExplanationService.js';
+import { buildOTARecommendation } from './otaDecisionService.js';
 
 // Helper: Get last log timestamp from Elasticsearch
 const getLastLogTimestamp = async (deviceId) => {
@@ -308,14 +312,71 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
 
     // Get current firmware version (if exists) - ONLY from device.firmware{}
     const currentVersion = device.firmware?.currentVersion || null;
+    const currentFirmwareStatus = device.firmware?.status || 'idle';
 
-    // Update device with new firmware{} schema ONLY
+    // ========================================================================
+    // STATE CONSISTENCY GUARDS
+    // ========================================================================
+    // Guard 1: Cannot assign firmware older than currentVersion
+    // NOTE: Using simple string comparison. For semantic versions (e.g., "1.10.0" vs "1.2.0"),
+    // this may not work correctly. Consider using a semver library if versions follow semantic versioning.
+    if (currentVersion && firmwareVersion < currentVersion) {
+      throw new AppError(`Cannot assign firmware version ${firmwareVersion} older than current version ${currentVersion}`, 400);
+    }
+
+    // Guard 2: Cannot assign if status = updating
+    if (currentFirmwareStatus === 'updating') {
+      throw new AppError('Cannot assign firmware while device is updating', 400);
+    }
+
+    // ========================================================================
+    // OTA DECISION ENFORCEMENT
+    // ========================================================================
+    let otaDecision = { action: 'delay' }; // Default to delay if decision cannot be obtained (fail-closed)
+    try {
+      // Get anomaly analysis and OTA recommendation
+      const anomalyAnalysis = await getAnomalyAnalysis(normalizedDeviceId);
+      const explanations = buildAnomalyExplanations(anomalyAnalysis.features || {});
+      otaDecision = buildOTARecommendation(explanations);
+    } catch (decisionError) {
+      // If decision cannot be obtained, log warning and use fail-closed default (delay)
+      console.warn(`Failed to get OTA decision for device ${normalizedDeviceId}: ${decisionError.message}`);
+    }
+
+    // Enforce decision
+    if (otaDecision.action === 'block') {
+      throw new AppError(`OTA assignment blocked: ${otaDecision.reason?.join(', ') || 'Anomaly detected'}`, 403);
+    }
+
+    // ========================================================================
+    // LOG OTA EVENT (assign)
+    // ========================================================================
+    await logOTAEvent({
+      deviceId: normalizedDeviceId,
+      firmwareVersion: firmwareVersion,
+      action: 'assign',
+      source: 'admin',
+      reason: otaDecision.action === 'delay' 
+        ? `OTA delayed: ${otaDecision.reason?.join(', ') || 'Device unstable'}` 
+        : null,
+      metadata: {
+        decision: otaDecision.action,
+        confidence: otaDecision.confidence,
+      },
+    });
+
+    // ========================================================================
+    // UPDATE DEVICE STATE
+    // ========================================================================
+    // Decision enforcement: delay → "pending", allow → "assigned"
+    const firmwareStatus = otaDecision.action === 'delay' ? 'pending' : 'assigned';
+
     const updateResult = await devicesCollection.updateOne(
       { deviceId: normalizedDeviceId },
       {
         $set: {
           'firmware.desiredVersion': firmwareVersion,
-          'firmware.status': 'pending',
+          'firmware.status': firmwareStatus,
           'firmware.assignedAt': new Date(),
           updatedAt: new Date(),
         },
@@ -359,7 +420,7 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
   }
 };
 
-export const reportDeviceFirmware = async (deviceId, reportedFirmwareVersion, status) => {
+export const reportDeviceFirmware = async (deviceId, reportedFirmwareVersion, otaStatus) => {
   try {
     const normalizedDeviceId = String(deviceId).trim();
     const db = await getDb();
@@ -381,23 +442,69 @@ export const reportDeviceFirmware = async (deviceId, reportedFirmwareVersion, st
       throw new AppError('Device is not active', 403);
     }
 
+    // ========================================================================
+    // VALIDATE otaStatus (REQUIRED - NO INFERENCE)
+    // ========================================================================
+    const validOtaStatuses = ['downloading', 'updating', 'success', 'failed'];
+    if (!otaStatus || !validOtaStatuses.includes(otaStatus)) {
+      throw new AppError(`otaStatus is required and must be one of: ${validOtaStatuses.join(', ')}`, 400);
+    }
+
     const updateFields = {
       reportedFirmwareVersion: reportedFirmwareVersion,
       lastSeenAt: new Date(),
     };
 
-    // Update firmware{} schema based on reported status
-    if (status === 'failed') {
+    // ========================================================================
+    // MAP otaStatus TO ota_events.action (DIRECT MAPPING - NO INFERENCE)
+    // ========================================================================
+    const otaStatusToActionMap = {
+      'downloading': 'download',
+      'updating': 'update',
+      'success': 'success',
+      'failed': 'fail',
+    };
+    const eventAction = otaStatusToActionMap[otaStatus];
+
+    // ========================================================================
+    // UPDATE DEVICE STATE BASED ON otaStatus
+    // ========================================================================
+    if (otaStatus === 'failed') {
       updateFields['firmware.status'] = 'failed';
-    } else if (device.firmware?.desiredVersion && reportedFirmwareVersion === device.firmware.desiredVersion) {
-      // OTA completed successfully
+    } else if (otaStatus === 'success') {
+      // STATE CONSISTENCY GUARD: Only update currentVersion on success
+      if (!device.firmware?.desiredVersion) {
+        throw new AppError('Cannot report success without an assigned desiredVersion', 400);
+      }
+      if (reportedFirmwareVersion !== device.firmware.desiredVersion) {
+        throw new AppError(`Reported firmware version ${reportedFirmwareVersion} does not match desired version ${device.firmware.desiredVersion}`, 400);
+      }
       updateFields['firmware.currentVersion'] = reportedFirmwareVersion;
       updateFields['firmware.desiredVersion'] = null;
       updateFields['firmware.status'] = 'success';
-    } else if (status === 'ok' && device.firmware?.desiredVersion) {
-      // Device is downloading/updating
-      updateFields['firmware.status'] = 'downloading';
+    } else if (otaStatus === 'downloading' || otaStatus === 'updating') {
+      if (!device.firmware?.desiredVersion) {
+        throw new AppError(`Cannot report ${otaStatus} without an assigned desiredVersion`, 400);
+      }
+      updateFields['firmware.status'] = otaStatus;
     }
+
+    // ========================================================================
+    // LOG OTA EVENT (ALWAYS LOG WHEN otaStatus PROVIDED)
+    // ========================================================================
+    if (!device.firmware?.desiredVersion) {
+      throw new AppError('Cannot log OTA event without an assigned desiredVersion', 400);
+    }
+    await logOTAEvent({
+      deviceId: normalizedDeviceId,
+      firmwareVersion: device.firmware.desiredVersion,
+      action: eventAction,
+      source: 'device',
+      metadata: {
+        reportedFirmwareVersion,
+        otaStatus,
+      },
+    });
 
     await devicesCollection.updateOne(
       { deviceId: normalizedDeviceId },
