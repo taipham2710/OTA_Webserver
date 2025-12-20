@@ -1096,6 +1096,15 @@
                 const data = await api.devices.otaEvents(deviceId);
                 const events = data.data || [];
 
+                if (events.length === 0) {
+                    otaContent.innerHTML = `
+                        <div class="text-center py-12 text-gray-500">
+                            No OTA activity recorded for this device.
+                        </div>
+                    `;
+                    return;
+                }
+
                 // Action → UI mapping (exact as specified)
                 const actionMapping = {
                     'assign': { icon: '📝', label: 'Firmware assigned', color: 'blue' },
@@ -1114,37 +1123,89 @@
                     'red': 'border-red-500 bg-red-50',
                 };
 
-                if (events.length === 0) {
-                    otaContent.innerHTML = `
-                        <div class="text-center py-12 text-gray-500">
-                            No OTA activity recorded for this device.
-                        </div>
-                    `;
-                    return;
-                }
+                // ========================================================================
+                // GROUP EVENTS INTO OTA ATTEMPTS
+                // ========================================================================
+                const attempts = [];
+                let currentAttempt = null;
 
                 // Events are already sorted by createdAt ASC from backend
+                events.forEach(event => {
+                    if (event.action === 'assign') {
+                        // Close previous attempt if exists
+                        if (currentAttempt) {
+                            attempts.push(currentAttempt);
+                        }
+                        // Create new attempt
+                        currentAttempt = {
+                            firmwareVersion: event.firmwareVersion,
+                            startTime: event.createdAt,
+                            endTime: null,
+                            status: 'in_progress',
+                            failureReason: null,
+                            timeline: [event],
+                        };
+                    } else if (currentAttempt) {
+                        // Add event to current attempt
+                        currentAttempt.timeline.push(event);
+                        
+                        // Update attempt status and endTime
+                        if (event.action === 'success') {
+                            currentAttempt.status = 'success';
+                            currentAttempt.endTime = event.createdAt;
+                        } else if (event.action === 'fail') {
+                            currentAttempt.status = 'failed';
+                            currentAttempt.endTime = event.createdAt;
+                            if (event.reason) {
+                                currentAttempt.failureReason = event.reason;
+                            }
+                        }
+                    }
+                });
+
+                // Push last attempt if exists
+                if (currentAttempt) {
+                    attempts.push(currentAttempt);
+                }
+
+                // Reverse attempts so latest appears first (#1 is oldest)
+                attempts.reverse();
+
+                // ========================================================================
+                // RENDER GROUPED OTA ATTEMPTS
+                // ========================================================================
                 otaContent.innerHTML = `
-                    <div class="relative">
-                        <div class="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200"></div>
-                        <div class="space-y-6">
-                            ${events.map((event, index) => {
+                    <div class="space-y-4">
+                        ${attempts.map((attempt, index) => {
+                            const attemptNumber = attempts.length - index; // #1 is oldest
+                            const startTime = new Date(attempt.startTime).toLocaleString();
+                            const endTime = attempt.endTime ? new Date(attempt.endTime).toLocaleString() : null;
+                            
+                            // Status badge
+                            let statusBadge = '';
+                            if (attempt.status === 'success') {
+                                statusBadge = '<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">Success</span>';
+                            } else if (attempt.status === 'failed') {
+                                statusBadge = '<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">Failed</span>';
+                            } else {
+                                statusBadge = '<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">In progress</span>';
+                            }
+
+                            // Render timeline events
+                            const timelineHtml = attempt.timeline.map(event => {
                                 const mapping = actionMapping[event.action] || { icon: '•', label: event.action, color: 'gray' };
                                 const colorClass = colorClasses[mapping.color] || 'border-gray-500 bg-gray-50';
                                 const timestamp = new Date(event.createdAt).toLocaleString();
                                 
                                 return `
                                     <div class="relative flex items-start">
-                                        <div class="flex-shrink-0 w-12 h-12 rounded-full ${colorClass} border-2 flex items-center justify-center text-xl z-10">
+                                        <div class="flex-shrink-0 w-10 h-10 rounded-full ${colorClass} border-2 flex items-center justify-center text-lg z-10">
                                             ${mapping.icon}
                                         </div>
                                         <div class="ml-4 flex-1 min-w-0">
                                             <div class="flex items-center justify-between">
-                                                <h3 class="text-base font-medium text-gray-900">${mapping.label}</h3>
-                                                <span class="text-sm text-gray-500">${timestamp}</span>
-                                            </div>
-                                            <div class="mt-1 text-sm text-gray-600">
-                                                Firmware version: <span class="font-mono font-medium">${event.firmwareVersion}</span>
+                                                <h4 class="text-sm font-medium text-gray-900">${mapping.label}</h4>
+                                                <span class="text-xs text-gray-500">${timestamp}</span>
                                             </div>
                                             ${event.source ? `
                                                 <div class="mt-1 text-xs text-gray-500">
@@ -1152,15 +1213,51 @@
                                                 </div>
                                             ` : ''}
                                             ${event.action === 'fail' && event.reason ? `
-                                                <div class="mt-2 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                                                <div class="mt-1 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
                                                     ${event.reason}
                                                 </div>
                                             ` : ''}
                                         </div>
                                     </div>
                                 `;
-                            }).join('')}
-                        </div>
+                            }).join('');
+
+                            return `
+                                <div class="bg-white border border-gray-200 rounded-lg p-4">
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center space-x-3">
+                                            <span class="text-sm font-semibold text-gray-700">▶ OTA Attempt #${attemptNumber}</span>
+                                            <span class="text-sm text-gray-600">–</span>
+                                            <span class="text-sm font-mono text-gray-900">${attempt.firmwareVersion}</span>
+                                            <span class="text-sm text-gray-600">–</span>
+                                            ${statusBadge}
+                                        </div>
+                                        <button 
+                                            onclick="toggleAttemptDetails(${index})"
+                                            class="text-sm text-blue-600 hover:text-blue-700 underline"
+                                            id="toggle-btn-${index}">
+                                            View details ▼
+                                        </button>
+                                    </div>
+                                    <div class="mt-2 text-sm text-gray-600">
+                                        Assigned at: ${startTime}
+                                    </div>
+                                    ${attempt.failureReason ? `
+                                        <div class="mt-2 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                                            ${attempt.failureReason}
+                                        </div>
+                                    ` : ''}
+                                    <div id="attempt-timeline-${index}" class="hidden mt-4 pt-4 border-t border-gray-200">
+                                        <div class="relative">
+                                            <div class="absolute left-5 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+                                            <div class="space-y-4">
+                                                ${timelineHtml}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
                     </div>
                 `;
             } catch (error) {
@@ -1185,6 +1282,22 @@
                 }
             }
         }
+
+        // Toggle attempt details visibility
+        window.toggleAttemptDetails = function(index) {
+            const timeline = document.getElementById(`attempt-timeline-${index}`);
+            const toggleBtn = document.getElementById(`toggle-btn-${index}`);
+            
+            if (!timeline || !toggleBtn) return;
+            
+            if (timeline.classList.contains('hidden')) {
+                timeline.classList.remove('hidden');
+                toggleBtn.textContent = 'Hide details ▲';
+            } else {
+                timeline.classList.add('hidden');
+                toggleBtn.textContent = 'View details ▼';
+            }
+        };
 
         // Format timestamp
         function formatTime(ts) {
