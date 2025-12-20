@@ -53,14 +53,14 @@
                 const data = await api.devices.list();
                 renderDevices(data.data || []);
             } catch (error) {
-                document.getElementById('devicesTable').innerHTML = 
+                document.getElementById('devicesTable').innerHTML =
                     `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
             }
         }
 
         function renderDevices(devices) {
             if (devices.length === 0) {
-                document.getElementById('devicesTable').innerHTML = 
+                document.getElementById('devicesTable').innerHTML =
                     '<div class="p-8 text-center text-gray-500">No devices found</div>';
                 return;
             }
@@ -85,7 +85,7 @@
                             <tr class="hover:bg-gray-50">
                                 <td class="px-4 py-3 text-sm text-gray-900">${device.deviceId || device.id || 'N/A'}</td>
                                 <td class="px-4 py-3 text-sm text-gray-700">${device.deviceType || 'N/A'}</td>
-                                <td class="px-4 py-3 text-sm text-gray-700">${device.firmwareVersion || device.assignedFirmware || 'N/A'}</td>
+                                <td class="px-4 py-3 text-sm text-gray-700">${device.firmwareVersion || 'N/A'}</td>
                                 <td class="px-4 py-3 text-sm text-gray-600">${device.reportedFirmwareVersion || 'N/A'}</td>
                                 <td class="px-4 py-3">
                                     <span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getStatusColor(device.status)}">
@@ -94,32 +94,34 @@
                                 </td>
                                 <td class="px-4 py-3">
                                     <span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">
-                                        ${device.otaStatus || 'N/A'}
+                                        ${device.otaStatus || 'idle'}
                                     </span>
                                 </td>
                                 <td class="px-4 py-3">
                                     ${(() => {
-                                        // NOTE: anomalyScore and isAnomaly come from backend ML inference.
-                                        // UI does not compute or decide anomaly state.
-                                        // Future work: anomaly history & explainability.
+                                        // STRICT: Only show anomaly badge when isAnomaly === true
+                                        // Do NOT infer from anomalyScore or history
                                         if (device.isAnomaly === true) {
                                             const score = (device.anomalyScore !== null && device.anomalyScore !== undefined && typeof device.anomalyScore === 'number')
-                                                ? device.anomalyScore.toFixed(2) 
+                                                ? device.anomalyScore.toFixed(2)
                                                 : '';
                                             return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800" title="Score: ${score}">Anomaly</span>`;
-                                        } else if (device.isAnomaly === false || (device.anomalyScore !== null && device.anomalyScore !== undefined)) {
-                                            const score = (device.anomalyScore !== null && device.anomalyScore !== undefined && typeof device.anomalyScore === 'number')
-                                                ? device.anomalyScore.toFixed(2) 
-                                                : '';
-                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800" title="Score: ${score}">Normal</span>`;
                                         } else {
-                                            return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
+                                            // isAnomaly === false or undefined/null → show Normal or N/A
+                                            if (device.isAnomaly === false) {
+                                                const score = (device.anomalyScore !== null && device.anomalyScore !== undefined && typeof device.anomalyScore === 'number')
+                                                    ? device.anomalyScore.toFixed(2)
+                                                    : '';
+                                                return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800" title="Score: ${score}">Normal</span>`;
+                                            } else {
+                                                return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
+                                            }
                                         }
                                     })()}
                                 </td>
                                 <td class="px-4 py-3 text-sm text-gray-600">${ui.formatDate(device.lastSeenAt || device.lastCheckin || device.lastSeen)}</td>
                                 <td class="px-4 py-3">
-                                    <a href="/device_detail.html?device_id=${device.deviceId || device.id}" 
+                                    <a href="/device_detail.html?device_id=${device.deviceId || device.id}"
                                        class="text-blue-600 hover:text-blue-700 text-sm">View Details</a>
                                 </td>
                             </tr>

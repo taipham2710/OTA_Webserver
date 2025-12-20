@@ -310,12 +310,16 @@
 
             <div id="content-anomaly" class="tab-content hidden">
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <!-- CRITICAL: This tab shows HISTORY ONLY, not current state -->
+                    <!-- Current anomaly state is displayed in Overview/Info tab from devices collection -->
                     <h2 class="section-title">Anomaly Timeline</h2>
-                    
+
                     <!-- OTA Recommendation Banner -->
+                    <!-- CRITICAL: Banner visibility depends on CURRENT device state, but content comes from latest event -->
                     <div id="ota-banner" class="ota-banner hidden"></div>
-                    
+
                     <!-- Anomaly Events Container -->
+                    <!-- CRITICAL: These are HISTORICAL events - scores shown are from when events were created -->
                     <div id="anomaly-timeline">
                         <div class="loading">Loading anomaly events...</div>
                     </div>
@@ -349,7 +353,7 @@
 
         window.showTab = function(tab) {
             currentTab = tab;
-            
+
             // Update tab buttons
             document.querySelectorAll('.tab-button').forEach(btn => {
                 btn.classList.remove('border-blue-500', 'font-medium', 'text-gray-900');
@@ -381,6 +385,9 @@
                 const data = await api.devices.get(deviceId);
                 const device = data.data;
 
+                // IMPORTANT: Anomaly tab is always visible (it shows history, not current state)
+                // Do NOT hide tab based on isAnomaly
+
                 document.getElementById('deviceInfo').innerHTML = `
                     <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                         <h2 class="text-xl font-bold mb-4 text-gray-900">${device.deviceId || device.id}</h2>
@@ -399,7 +406,7 @@
                             </div>
                             <div>
                                 <div class="text-sm text-gray-600">OTA Status</div>
-                                <div><span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">${device.otaStatus || 'N/A'}</span></div>
+                                <div><span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">${device.otaStatus || 'idle'}</span></div>
                             </div>
                             <div>
                                 <div class="text-sm text-gray-600">Reported FW</div>
@@ -409,12 +416,11 @@
                                 <div class="text-sm text-gray-600">Anomaly Status</div>
                                 <div>
                                     ${(() => {
-                                        // NOTE: anomalyScore and isAnomaly come from backend ML inference.
-                                        // UI does not compute or decide anomaly state.
-                                        // Future work: anomaly history & explainability.
+                                        // STRICT: Only show anomaly badge when isAnomaly === true
+                                        // Do NOT infer from anomalyScore or history
                                         if (device.isAnomaly === true) {
                                             return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">Anomaly</span>`;
-                                        } else if (device.isAnomaly === false || (device.anomalyScore !== null && device.anomalyScore !== undefined)) {
+                                        } else if (device.isAnomaly === false) {
                                             return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">Normal</span>`;
                                         } else {
                                             return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
@@ -434,7 +440,7 @@
                     loadInfoTab(device);
                 }
             } catch (error) {
-                document.getElementById('deviceInfo').innerHTML = 
+                document.getElementById('deviceInfo').innerHTML =
                     `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
             }
         }
@@ -445,6 +451,16 @@
             if (!banner) return;
 
             try {
+                // STRICT: Get device to check isAnomaly (single source of truth)
+                const deviceData = await api.devices.get(deviceId);
+                const device = deviceData.data;
+
+                // HARD RULE: Show banner ONLY if device.isAnomaly === true
+                if (device.isAnomaly !== true) {
+                    banner.classList.add('hidden');
+                    return;
+                }
+
                 const data = await api.devices.anomalies(deviceId, { limit: 1 });
                 const events = Array.isArray(data.data) ? data.data : [];
 
@@ -456,8 +472,8 @@
                 const latest = events[0];
                 const recommendation = latest.otaRecommendation;
                 const action = (recommendation.action || 'allow').toUpperCase();
-                const confidence = typeof recommendation.confidence === 'number' 
-                    ? Math.round(recommendation.confidence * 100) 
+                const confidence = typeof recommendation.confidence === 'number'
+                    ? Math.round(recommendation.confidence * 100)
                     : 0;
                 const reasons = recommendation.reason || [];
                 const timestamp = formatTime(latest.timestamp);
@@ -515,7 +531,7 @@
                         </div>
                         <div>
                             <div class="text-sm text-gray-600">OTA Status</div>
-                            <div><span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">${device.otaStatus || 'N/A'}</span></div>
+                            <div><span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getOTAStatusColor(device.otaStatus)}">${device.otaStatus || 'idle'}</span></div>
                         </div>
                         <div>
                             <div class="text-sm text-gray-600">Last Seen</div>
@@ -535,12 +551,11 @@
                         <div class="space-y-2">
                             <div class="flex items-center space-x-3">
                                 ${(() => {
-                                    // NOTE: anomalyScore and isAnomaly come from backend ML inference.
-                                    // UI does not compute or decide anomaly state.
-                                    // Future work: anomaly history & explainability.
+                                    // STRICT: Only show anomaly badge when isAnomaly === true
+                                    // Do NOT infer from anomalyScore or history
                                     if (device.isAnomaly === true) {
                                         return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-red-100 text-red-800">Anomaly</span>`;
-                                    } else if (device.isAnomaly === false || (device.anomalyScore !== null && device.anomalyScore !== undefined)) {
+                                    } else if (device.isAnomaly === false) {
                                         return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-green-100 text-green-800">Normal</span>`;
                                     } else {
                                         return '<span class="px-3 py-1 rounded-md text-sm font-medium bg-gray-100 text-gray-800">N/A</span>';
@@ -573,13 +588,15 @@
             } else if (tab === 'ota') {
                 await loadOTAHistory();
             } else if (tab === 'anomaly') {
+                // CRITICAL: Loading anomaly tab does NOT update device header/overview
+                // It only loads and displays historical events
                 await loadAnomaly();
             }
         }
 
         async function loadMetrics() {
             const metricsContent = document.getElementById('metricsContent');
-            
+
             // Show loading state
             metricsContent.innerHTML = `
                 <div class="flex items-center justify-center p-8">
@@ -589,13 +606,13 @@
 
             try {
                 const data = await api.metrics.list({ deviceId, limit: 200 });
-                
+
                 // Defensive: NEVER assume data exists, NEVER call .map() on undefined
                 // Rules: Empty data is VALID, UI must stay on Metrics tab, no navigation reset
                 const metrics = data?.data ?? [];
 
                 if (!Array.isArray(metrics) || metrics.length === 0) {
-                    metricsContent.innerHTML = 
+                    metricsContent.innerHTML =
                         '<div class="p-8 text-center text-gray-500">No metrics data available</div>';
                     return;
                 }
@@ -770,7 +787,7 @@
                         },
                     });
                 } else {
-                    document.getElementById('cpuChart').parentElement.innerHTML = 
+                    document.getElementById('cpuChart').parentElement.innerHTML =
                         '<div class="p-4 text-center text-gray-500">No CPU usage data available</div>';
                 }
 
@@ -843,7 +860,7 @@
                         },
                     });
                 } else {
-                    document.getElementById('temperatureChart').parentElement.innerHTML = 
+                    document.getElementById('temperatureChart').parentElement.innerHTML =
                         '<div class="p-4 text-center text-gray-500">No temperature data available</div>';
                 }
 
@@ -918,25 +935,25 @@
                         },
                     });
                 } else {
-                    document.getElementById('batteryChart').parentElement.innerHTML = 
+                    document.getElementById('batteryChart').parentElement.innerHTML =
                         '<div class="p-4 text-center text-gray-500">No battery level data available</div>';
                 }
             } catch (error) {
-                metricsContent.innerHTML = 
+                metricsContent.innerHTML =
                     `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
             }
         }
 
         function renderLogs(logs) {
             const logsContent = document.getElementById('logsContent');
-            
+
             // Defensive: Empty data is VALID, show empty state, stay on tab
             if (!Array.isArray(logs) || logs.length === 0) {
                 logsContent.innerHTML = `
                     <div class="space-y-4">
                         <div class="p-8 text-center text-gray-500">No logs available for this device</div>
                         <div class="text-center">
-                            <a href="/logs.html?deviceId=${encodeURIComponent(deviceId)}" 
+                            <a href="/logs.html?deviceId=${encodeURIComponent(deviceId)}"
                                class="text-blue-600 hover:text-blue-700 underline">
                                 View all logs in Logs tab →
                             </a>
@@ -953,7 +970,7 @@
                 <div class="space-y-4">
                     <div class="flex justify-between items-center">
                         <h3 class="text-lg font-semibold text-gray-900">Recent Logs (Latest 10)</h3>
-                        <a href="/logs.html?deviceId=${encodeURIComponent(deviceId)}" 
+                        <a href="/logs.html?deviceId=${encodeURIComponent(deviceId)}"
                            class="text-sm text-blue-600 hover:text-blue-700 underline">
                             View all logs →
                         </a>
@@ -961,10 +978,10 @@
                     <div class="space-y-2">
                         ${logs.map(log => {
                             const timestamp = log.timestamp ? ui.formatDate(log.timestamp) : 'unknown time';
-                            const levelColor = log.level === 'ERROR' 
-                                ? 'bg-red-100 text-red-800' 
-                                : log.level === 'WARN' 
-                                ? 'bg-yellow-100 text-yellow-800' 
+                            const levelColor = log.level === 'ERROR'
+                                ? 'bg-red-100 text-red-800'
+                                : log.level === 'WARN'
+                                ? 'bg-yellow-100 text-yellow-800'
                                 : 'bg-blue-100 text-blue-800';
 
                             return `
@@ -984,7 +1001,7 @@
 
         async function loadLogs() {
             const logsContent = document.getElementById('logsContent');
-            
+
             // Show loading state
             logsContent.innerHTML = `
                 <div class="flex items-center justify-center p-8">
@@ -995,17 +1012,17 @@
             try {
                 // Call API /api/logs with deviceId and limit 10 (latest logs only)
                 const response = await api.logs.list({ deviceId, limit: 10 });
-                
+
                 // Defensive: read from data.data (backend returns { success: true, data: [...] })
                 if (!response || !response.data) {
-                    logsContent.innerHTML = 
+                    logsContent.innerHTML =
                         '<div class="p-8 text-center text-gray-500">No logs available for this device</div>';
                     logsList = [];
                     return;
                 }
 
                 const rawLogs = Array.isArray(response.data) ? response.data : [];
-                
+
                 // Normalize logs: map @timestamp to timestamp for clean UI rendering
                 const normalizedLogs = rawLogs.map(log => ({
                     id: log.id,
@@ -1014,12 +1031,12 @@
                     level: log.level || 'info',
                     message: log.message || '(empty message)',
                 }));
-                
+
                 logsList = normalizedLogs;
                 renderLogs(logsList);
             } catch (error) {
                 // Show error state
-                logsContent.innerHTML = 
+                logsContent.innerHTML =
                     `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message || 'Failed to load logs'}</div>`;
                 logsList = [];
             }
@@ -1028,7 +1045,7 @@
         function prependLog(newLog) {
             // NOTE: For MVP, realtime logs are prepended locally.
             // Future improvement: virtualized list or server-side pagination.
-            
+
             if (!newLog) return;
 
             // Normalize log: map @timestamp to timestamp
@@ -1075,7 +1092,7 @@
                     </div>
                 `;
             } catch (error) {
-                document.getElementById('otaContent').innerHTML = 
+                document.getElementById('otaContent').innerHTML =
                     `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
             }
         }
@@ -1103,8 +1120,8 @@
             }
 
             const action = recommendation.action.toUpperCase();
-            const confidence = typeof recommendation.confidence === 'number' 
-                ? Math.round(recommendation.confidence * 100) 
+            const confidence = typeof recommendation.confidence === 'number'
+                ? Math.round(recommendation.confidence * 100)
                 : 0;
             const reasons = recommendation.reason || [];
 
@@ -1125,18 +1142,23 @@
         }
 
         // Render Anomaly Event (from persisted events only)
+        // CRITICAL: This function renders HISTORICAL data only
+        // - event.anomalyScore is the score AT THE TIME the event was created
+        // - This is NOT the current anomaly score
+        // - Current anomaly score is ONLY displayed in Overview/Info tab from devices collection
         function renderAnomalyEvent(event) {
             if (!event || !event.timestamp) {
                 return '';
             }
 
             const timestamp = formatTime(event.timestamp);
+            // CRITICAL: This score is HISTORICAL - from when event was created
             const score = typeof event.anomalyScore === 'number' ? event.anomalyScore.toFixed(2) : null;
             const threshold = typeof event.threshold === 'number' ? event.threshold.toFixed(2) : null;
 
             // Get first explanation if exists
-            const exp = event.explanations && event.explanations.length > 0 
-                ? event.explanations[0] 
+            const exp = event.explanations && event.explanations.length > 0
+                ? event.explanations[0]
                 : null;
 
             // OTA Recommendation if exists
@@ -1210,8 +1232,8 @@
             // OTA Recommendation section - only if exists
             if (otaRec && otaRec.action) {
                 const action = otaRec.action.toUpperCase();
-                const confidence = typeof otaRec.confidence === 'number' 
-                    ? Math.round(otaRec.confidence * 100) 
+                const confidence = typeof otaRec.confidence === 'number'
+                    ? Math.round(otaRec.confidence * 100)
                     : 0;
                 const reasons = otaRec.reason || [];
 
@@ -1254,11 +1276,18 @@
         }
 
         // Load anomalies (lazy loading - only when tab is opened)
+        // CRITICAL ARCHITECTURE RULE:
+        // - This function ONLY renders HISTORY (anomalies collection)
+        // - It NEVER updates device header/overview
+        // - It NEVER displays current anomaly score
+        // - It NEVER derives current state from events
+        // - Current state comes ONLY from devices collection via GET /api/devices/:id
         async function loadAnomalies(deviceId) {
             const container = document.getElementById('anomaly-timeline');
             const otaBanner = document.getElementById('ota-banner');
 
             try {
+                // Fetch HISTORY ONLY - no derived state
                 const data = await api.devices.anomalies(deviceId);
                 const events = Array.isArray(data.data) ? data.data : [];
 
@@ -1268,15 +1297,23 @@
                     return;
                 }
 
-                // === OTA Banner (use latest event) ===
-                const latest = events[0];
-                if (latest.otaRecommendation) {
-                    renderOTABanner(latest.otaRecommendation, otaBanner);
+                // === OTA Banner (only show if current device state is anomalous) ===
+                // CRITICAL: Fetch current device state separately for banner visibility ONLY
+                // This does NOT update device header - it's only used for banner visibility check
+                const deviceData = await api.devices.get(deviceId);
+                const device = deviceData.data;
+
+                // OTA banner visibility depends on CURRENT state from devices collection, not history
+                // CRITICAL: We use events[0] ONLY for recommendation content, NOT for state
+                if (device.isAnomaly === true && events[0]?.otaRecommendation) {
+                    renderOTABanner(events[0].otaRecommendation, otaBanner);
                 } else {
                     otaBanner.classList.add('hidden');
                 }
 
-                // === Render anomaly timeline ===
+                // === Render anomaly timeline (ALWAYS visible - it's history) ===
+                // CRITICAL: Timeline entries show HISTORICAL scores from events, NOT current state
+                // Each event.anomalyScore is from when the event was created, not current score
                 container.innerHTML = events.map(renderAnomalyEvent).join('');
 
             } catch (err) {
@@ -1295,7 +1332,7 @@
         const socket = realtime.connect();
         if (socket && realtime.isConnected()) {
             realtime.subscribeDevice(deviceId);
-            
+
             realtime.on('logs', (data) => {
                 if ((data.deviceId === deviceId || data.device_id === deviceId) && currentTab === 'logs') {
                     prependLog(data);
