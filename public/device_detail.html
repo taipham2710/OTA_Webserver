@@ -359,14 +359,20 @@
                 btn.classList.remove('border-blue-500', 'font-medium', 'text-gray-900');
                 btn.classList.add('border-transparent', 'text-gray-600');
             });
-            document.getElementById(`tab-${tab}`).classList.add('border-blue-500', 'font-medium', 'text-gray-900');
-            document.getElementById(`tab-${tab}`).classList.remove('text-gray-600');
+            const tabButton = document.getElementById(`tab-${tab}`);
+            if (tabButton) {
+                tabButton.classList.add('border-blue-500', 'font-medium', 'text-gray-900');
+                tabButton.classList.remove('text-gray-600');
+            }
 
             // Show/hide content
             document.querySelectorAll('.tab-content').forEach(content => {
                 content.classList.add('hidden');
             });
-            document.getElementById(`content-${tab}`).classList.remove('hidden');
+            const contentDiv = document.getElementById(`content-${tab}`);
+            if (contentDiv) {
+                contentDiv.classList.remove('hidden');
+            }
 
             // Load tab data
             loadTabData(tab);
@@ -1072,28 +1078,111 @@
         }
 
         async function loadOTAHistory() {
-            try {
-                const data = await api.ota.history(deviceId);
-                const history = data.data || [];
+            const otaContent = document.getElementById('otaContent');
+            
+            if (!otaContent) {
+                console.error('OTA content element not found');
+                return;
+            }
+            
+            // Show loading state
+            otaContent.innerHTML = `
+                <div class="flex items-center justify-center p-8">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                </div>
+            `;
 
-                document.getElementById('otaContent').innerHTML = `
-                    <div class="space-y-3">
-                        ${history.map(item => `
-                            <div class="p-4 bg-gray-50 rounded border border-gray-200">
-                                <div class="flex justify-between items-center">
-                                    <div>
-                                        <div class="font-medium text-gray-900">${item.firmwareVersion}</div>
-                                        <div class="text-sm text-gray-600">${ui.formatDate(item.deployedAt)}</div>
+            try {
+                const data = await api.devices.otaEvents(deviceId);
+                const events = data.data || [];
+
+                // Action → UI mapping (exact as specified)
+                const actionMapping = {
+                    'assign': { icon: '📝', label: 'Firmware assigned', color: 'blue' },
+                    'download': { icon: '⬇️', label: 'Downloading firmware', color: 'cyan' },
+                    'update': { icon: '🔄', label: 'Updating firmware', color: 'orange' },
+                    'success': { icon: '✅', label: 'Update successful', color: 'green' },
+                    'fail': { icon: '❌', label: 'Update failed', color: 'red' },
+                };
+
+                // Color classes for Tailwind
+                const colorClasses = {
+                    'blue': 'border-blue-500 bg-blue-50',
+                    'cyan': 'border-cyan-500 bg-cyan-50',
+                    'orange': 'border-orange-500 bg-orange-50',
+                    'green': 'border-green-500 bg-green-50',
+                    'red': 'border-red-500 bg-red-50',
+                };
+
+                if (events.length === 0) {
+                    otaContent.innerHTML = `
+                        <div class="text-center py-12 text-gray-500">
+                            No OTA activity recorded for this device.
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Events are already sorted by createdAt ASC from backend
+                otaContent.innerHTML = `
+                    <div class="relative">
+                        <div class="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+                        <div class="space-y-6">
+                            ${events.map((event, index) => {
+                                const mapping = actionMapping[event.action] || { icon: '•', label: event.action, color: 'gray' };
+                                const colorClass = colorClasses[mapping.color] || 'border-gray-500 bg-gray-50';
+                                const timestamp = new Date(event.createdAt).toLocaleString();
+                                
+                                return `
+                                    <div class="relative flex items-start">
+                                        <div class="flex-shrink-0 w-12 h-12 rounded-full ${colorClass} border-2 flex items-center justify-center text-xl z-10">
+                                            ${mapping.icon}
+                                        </div>
+                                        <div class="ml-4 flex-1 min-w-0">
+                                            <div class="flex items-center justify-between">
+                                                <h3 class="text-base font-medium text-gray-900">${mapping.label}</h3>
+                                                <span class="text-sm text-gray-500">${timestamp}</span>
+                                            </div>
+                                            <div class="mt-1 text-sm text-gray-600">
+                                                Firmware version: <span class="font-mono font-medium">${event.firmwareVersion}</span>
+                                            </div>
+                                            ${event.source ? `
+                                                <div class="mt-1 text-xs text-gray-500">
+                                                    Source: ${event.source}
+                                                </div>
+                                            ` : ''}
+                                            ${event.action === 'fail' && event.reason ? `
+                                                <div class="mt-2 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                                                    ${event.reason}
+                                                </div>
+                                            ` : ''}
+                                        </div>
                                     </div>
-                                    <span class="px-2 py-1 rounded-md text-xs font-medium ${ui.getOTAStatusColor(item.status)}">${item.status}</span>
-                                </div>
-                            </div>
-                        `).join('')}
+                                `;
+                            }).join('')}
+                        </div>
                     </div>
                 `;
             } catch (error) {
-                document.getElementById('otaContent').innerHTML =
-                    `<div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">Error: ${error.message}</div>`;
+                const errorContent = document.getElementById('otaContent');
+                if (!errorContent) {
+                    console.error('OTA content element not found in error handler');
+                    return;
+                }
+                
+                if (error.message && (error.message.includes('404') || error.message.includes('not found'))) {
+                    errorContent.innerHTML = `
+                        <div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">
+                            Device not found.
+                        </div>
+                    `;
+                } else {
+                    errorContent.innerHTML = `
+                        <div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">
+                            Failed to load OTA history.
+                        </div>
+                    `;
+                }
             }
         }
 
