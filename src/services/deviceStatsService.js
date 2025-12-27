@@ -14,16 +14,15 @@ export const getDeviceStatistics = async () => {
     let anomalyCount = 0;
     let warningCount = 0;
     
-    // Count by status (if devices have isAnomaly field stored)
+    // Count by anomaly state stored in devices.anomaly (single source of truth)
     devices.forEach(device => {
-      if (device.isAnomaly === true) {
+      const risk = device?.anomaly?.risk_level || null;
+      if (risk === 'high') {
         anomalyCount++;
-      } else if (device.isAnomaly === false) {
-        normalCount++;
-      } else if (device.status === 'warning' || device.status === 'degraded') {
+      } else if (risk === 'warning') {
         warningCount++;
       } else {
-        normalCount++; // Default to normal
+        normalCount++;
       }
     });
     
@@ -37,4 +36,3 @@ export const getDeviceStatistics = async () => {
     throw new AppError(`Failed to get device statistics: ${error.message}`, 500);
   }
 };
-

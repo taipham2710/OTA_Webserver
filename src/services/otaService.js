@@ -1,8 +1,5 @@
 import { getDb } from '../clients/mongodb.js';
 import { AppError } from '../utils/errors.js';
-import { getAnomalyAnalysis } from './anomalyService.js';
-import { buildAnomalyExplanations } from './anomalyExplanationService.js';
-import { buildOTARecommendation } from './otaDecisionService.js';
 import { logOTAEvent } from './otaEventService.js';
 
 /**
@@ -139,15 +136,17 @@ export const assignOTA = async (assignmentData) => {
         // ========================================================================
         // OTA DECISION ENFORCEMENT
         // ========================================================================
-        let otaDecision = { action: 'delay' }; // Default to delay if decision cannot be obtained (fail-closed)
-        try {
-          // Get anomaly analysis and OTA recommendation
-          const anomalyAnalysis = await getAnomalyAnalysis(normalizedDeviceId);
-          const explanations = buildAnomalyExplanations(anomalyAnalysis.features || {});
-          otaDecision = buildOTARecommendation(explanations);
-        } catch (decisionError) {
-          // If decision cannot be obtained, log warning and use fail-closed default (delay)
-          console.warn(`Failed to get OTA decision for device ${normalizedDeviceId}: ${decisionError.message}`);
+        // Anomaly decision must be centralized in /api/anomaly/:deviceId/infer.
+        // OTA enforcement reads current anomaly decision ONLY from devices.anomaly.
+        let otaDecision = { action: 'delay' }; // Fail-closed if device has no anomaly state yet
+        const currentAnomaly = device.anomaly ?? null;
+        const policyDecision = currentAnomaly?.decision ?? currentAnomaly?.action ?? null;
+        if (policyDecision === 'allow' || policyDecision === 'ALLOW') {
+          otaDecision = { action: 'allow' };
+        } else if (policyDecision === 'delay' || policyDecision === 'DELAY') {
+          otaDecision = { action: 'delay' };
+        } else if (policyDecision === 'block' || policyDecision === 'BLOCK') {
+          otaDecision = { action: 'block' };
         }
 
         // Enforce decision

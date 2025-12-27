@@ -4,9 +4,6 @@ import { getQueryApi } from '../clients/influxdb.js';
 import { config } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
 import { logOTAEvent } from './otaEventService.js';
-import { getAnomalyAnalysis } from './anomalyService.js';
-import { buildAnomalyExplanations } from './anomalyExplanationService.js';
-import { buildOTARecommendation } from './otaDecisionService.js';
 
 // Helper: Get last log timestamp from Elasticsearch
 const getLastLogTimestamp = async (deviceId) => {
@@ -107,12 +104,28 @@ export const getDevices = async (queryParams = {}) => {
         const otaStatus = device.firmware?.status || 'idle';
         const firmwareVersion = device.firmware?.currentVersion || null;
 
-        // Read anomaly state from devices collection (single source of truth)
-        // DO NOT compute anomaly here - it's updated by anomalyController after ML inference
-        const isAnomaly = device.isAnomaly === true;
-        const anomalyScore = device.anomalyScore ?? null;
-        const anomalyThreshold = device.anomalyThreshold ?? null;
-        const anomalyUpdatedAt = device.anomalyUpdatedAt ?? null;
+        // Read anomaly state from devices.anomaly (single source of truth)
+        // UI must not compute or infer anything from history.
+        const anomaly = (() => {
+          const state = device.anomaly ?? null;
+          if (!state || typeof state !== 'object') return null;
+
+          // Backward-compatible aliases for existing UI (read-only display)
+          const threshold = state.threshold;
+          const softThreshold = state.soft_threshold;
+          const decision = state.decision;
+
+          return {
+            ...state,
+            action: typeof state.action === 'string'
+              ? state.action
+              : (typeof decision === 'string' ? decision.toUpperCase() : undefined),
+            hard_threshold: typeof state.hard_threshold === 'number'
+              ? state.hard_threshold
+              : (typeof threshold === 'number' ? threshold : undefined),
+            soft_threshold: typeof softThreshold === 'number' ? softThreshold : undefined,
+          };
+        })();
 
         // Destructure to exclude legacy fields
         const {
@@ -132,10 +145,7 @@ export const getDevices = async (queryParams = {}) => {
           otaStatus,
           firmwareVersion,
           // Anomaly state (read from devices collection, single source of truth)
-          isAnomaly,
-          anomalyScore,
-          anomalyThreshold,
-          anomalyUpdatedAt,
+          anomaly,
           _id: undefined,
         };
       })
@@ -224,12 +234,27 @@ export const getDeviceById = async (deviceId) => {
       deviceData.metricCount = 0;
     }
 
-    // Read anomaly state from devices collection (single source of truth)
-    // DO NOT compute anomaly here - it's updated by anomalyController after ML inference
-    deviceData.isAnomaly = device.isAnomaly === true;
-    deviceData.anomalyScore = device.anomalyScore ?? null;
-    deviceData.anomalyThreshold = device.anomalyThreshold ?? null;
-    deviceData.anomalyUpdatedAt = device.anomalyUpdatedAt ?? null;
+    // Read anomaly state from devices.anomaly (single source of truth)
+    deviceData.anomaly = (() => {
+      const state = device.anomaly ?? null;
+      if (!state || typeof state !== 'object') return null;
+
+      // Backward-compatible aliases for existing UI (read-only display)
+      const threshold = state.threshold;
+      const softThreshold = state.soft_threshold;
+      const decision = state.decision;
+
+      return {
+        ...state,
+        action: typeof state.action === 'string'
+          ? state.action
+          : (typeof decision === 'string' ? decision.toUpperCase() : undefined),
+        hard_threshold: typeof state.hard_threshold === 'number'
+          ? state.hard_threshold
+          : (typeof threshold === 'number' ? threshold : undefined),
+        soft_threshold: typeof softThreshold === 'number' ? softThreshold : undefined,
+      };
+    })();
 
     // ===== Compute runtime lastSeen & status =====
     const lastLogTime = await getLastLogTimestamp(deviceId);
@@ -349,15 +374,17 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
     // ========================================================================
     // OTA DECISION ENFORCEMENT
     // ========================================================================
-    let otaDecision = { action: 'delay' }; // Default to delay if decision cannot be obtained (fail-closed)
-    try {
-      // Get anomaly analysis and OTA recommendation
-      const anomalyAnalysis = await getAnomalyAnalysis(normalizedDeviceId);
-      const explanations = buildAnomalyExplanations(anomalyAnalysis.features || {});
-      otaDecision = buildOTARecommendation(explanations);
-    } catch (decisionError) {
-      // If decision cannot be obtained, log warning and use fail-closed default (delay)
-      console.warn(`Failed to get OTA decision for device ${normalizedDeviceId}: ${decisionError.message}`);
+    // Anomaly decision must be centralized in /api/anomaly/:deviceId/infer.
+    // OTA enforcement reads current anomaly decision ONLY from devices.anomaly.
+    let otaDecision = { action: 'delay' }; // Fail-closed if device has no anomaly state yet
+    const currentAnomaly = device.anomaly ?? null;
+    const policyDecision = currentAnomaly?.decision ?? currentAnomaly?.action ?? null;
+    if (policyDecision === 'allow' || policyDecision === 'ALLOW') {
+      otaDecision = { action: 'allow' };
+    } else if (policyDecision === 'delay' || policyDecision === 'DELAY') {
+      otaDecision = { action: 'delay' };
+    } else if (policyDecision === 'block' || policyDecision === 'BLOCK') {
+      otaDecision = { action: 'block' };
     }
 
     // Enforce decision

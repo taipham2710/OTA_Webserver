@@ -1,9 +1,8 @@
-import { getAnomalyAnalysis } from '../services/anomalyService.js';
 import { validateDeviceId } from '../utils/validators.js';
 import { getDb } from '../clients/mongodb.js';
-import { buildAnomalyExplanations } from '../services/anomalyExplanationService.js';
-import { buildOTARecommendation } from '../services/otaDecisionService.js';
 import { AppError } from '../utils/errors.js';
+import { buildFeatureVector } from '../services/featureAggregationService.js';
+import { inferenceProxy } from '../services/inferenceProxyService.js';
 
 // ARCHITECTURE: Read-only endpoint - returns current anomaly state from devices collection
 // NO ML inference, NO database writes
@@ -20,14 +19,9 @@ export const getAnomalyHandler = async (req, res, next) => {
       throw new AppError('Device not found', 404);
     }
 
-    // Return current state only - no inference, no writes
-    const responseData = {
-      isAnomaly: device.isAnomaly === true,
-      anomalyScore: device.anomalyScore ?? null,
-      anomalyThreshold: device.anomalyThreshold ?? null,
-      anomalyUpdatedAt: device.anomalyUpdatedAt ? device.anomalyUpdatedAt.toISOString() : null,
-      source: device.anomalyUpdatedAt ? 'production' : null,
-    };
+    // Return current anomaly state only (single source of truth: devices.anomaly)
+    // UI must not compute or infer anything.
+    const responseData = device.anomaly ?? null;
 
     res.json({
       success: true,
@@ -40,56 +34,21 @@ export const getAnomalyHandler = async (req, res, next) => {
 
 // ARCHITECTURE: Manual analysis endpoint - ML inference without updating production state
 // Triggers ML inference but does NOT write to devices collection
-// May optionally write to anomalies collection with source='manual' for audit trail
 export const getAnomalyAnalysisHandler = async (req, res, next) => {
   try {
     const deviceId = validateDeviceId(req.params.device_id);
-    const { writeAudit = 'false' } = req.query;
-    const shouldWriteAudit = writeAudit === 'true' || writeAudit === true;
 
-    // Perform ML inference
-    const result = await getAnomalyAnalysis(deviceId);
-
-    // Build explanations and OTA recommendation from features
-    const explanations = buildAnomalyExplanations(result.features || {});
-    const otaRecommendation = buildOTARecommendation(explanations);
-
-    // CRITICAL: Do NOT write to devices collection
-    // Manual analysis must not affect production state
-
-    // Optionally write to anomalies collection for audit trail (if writeAudit=true)
-    if (shouldWriteAudit && result.isAnomaly === true) {
-      try {
-        const db = await getDb();
-        await db.collection('anomalies').insertOne({
-          deviceId,
-          timestamp: new Date(),
-          anomalyScore: result.anomalyScore,
-          threshold: result.threshold,
-          label: 'anomaly',
-          source: 'manual', // Distinguish from production inference
-          explanations,
-          otaRecommendation,
-          model: result.model || {
-            name: 'xgboost',
-            version: 'v1.0',
-            thresholdSource: 'default',
-          },
-          createdAt: new Date(),
-        });
-      } catch (eventError) {
-        // Log error but don't fail the request
-        console.warn(`Failed to write manual analysis event to DB for device ${deviceId}: ${eventError.message}`);
-      }
+    // Manual analysis is read-only: no DB writes, no anomaly history writes.
+    const featureVector = await buildFeatureVector(deviceId);
+    const upstream = await inferenceProxy.predict({ data: featureVector });
+    if (!upstream || upstream.status !== 200 || !upstream.data || typeof upstream.data !== 'object') {
+      throw new AppError('Inference service unavailable', 503);
     }
 
-    // Include explanations and OTA recommendation in response
+    // Return upstream result only (read-only).
     const responseData = {
-      ...result,
-      explanations,
-      otaRecommendation,
-      source: 'manual',
-      timestamp: new Date().toISOString(),
+      deviceId,
+      ...upstream.data,
     };
 
     res.json({
@@ -102,80 +61,101 @@ export const getAnomalyAnalysisHandler = async (req, res, next) => {
 };
 
 // ARCHITECTURE: Production inference endpoint - ML inference with production state update
-// This is the ONLY endpoint that can write to devices.isAnomaly
+// This is the ONLY endpoint that can write to devices.anomaly and anomaly_events.
 // Updates operational state for system use
 export const postAnomalyInferHandler = async (req, res, next) => {
   try {
     const deviceId = validateDeviceId(req.params.device_id);
 
-    // Perform ML inference
-    const result = await getAnomalyAnalysis(deviceId);
-
-    // Build explanations and OTA recommendation from features
-    const explanations = buildAnomalyExplanations(result.features || {});
-    const otaRecommendation = buildOTARecommendation(explanations);
-
-    // CRITICAL: Write to devices collection - this is the single source of truth
-    // Only this endpoint can update devices.isAnomaly
-    try {
-      const db = await getDb();
-      await db.collection('devices').updateOne(
-        { deviceId },
-        {
-          $set: {
-            anomalyScore: result.anomalyScore,
-            anomalyThreshold: result.threshold,
-            isAnomaly: result.isAnomaly,
-            anomalyUpdatedAt: new Date(),
-          },
-        },
-        { upsert: false } // Only update if device exists
-      );
-    } catch (dbError) {
-      // Log error but don't fail the request
-      console.warn(`Failed to persist anomaly result to DB for device ${deviceId}: ${dbError.message}`);
+    // Ensure device exists before doing any expensive aggregation/inference
+    const db = await getDb();
+    const device = await db.collection('devices').findOne({ deviceId });
+    if (!device) {
+      throw new AppError('Device not found', 404);
     }
 
-    // Write anomaly event to anomalies collection when anomaly is detected
-    // Only write when isAnomaly === true to avoid DB spam
-    if (result.isAnomaly === true) {
-      try {
-        const db = await getDb();
-        await db.collection('anomalies').insertOne({
-          deviceId,
-          timestamp: new Date(),
-          anomalyScore: result.anomalyScore,
-          threshold: result.threshold,
-          label: 'anomaly',
-          source: 'production', // Distinguish from manual analysis
-          explanations,
-          otaRecommendation,
-          model: result.model || {
-            name: 'xgboost',
-            version: 'v1.0',
-            thresholdSource: 'default',
-          },
-          createdAt: new Date(),
-        });
-      } catch (eventError) {
-        // Log error but don't fail the request
-        console.warn(`Failed to write anomaly event to DB for device ${deviceId}: ${eventError.message}`);
-      }
+    // 1) Aggregate features (existing logic)
+    const featureVector = await buildFeatureVector(deviceId);
+
+    // 2) Call inference service (authoritative)
+    const upstream = await inferenceProxy.predict({ data: featureVector });
+    if (!upstream || upstream.status !== 200 || !upstream.data || typeof upstream.data !== 'object') {
+      throw new AppError('Inference service unavailable', 503);
     }
 
-    // Include explanations and OTA recommendation in response
-    const responseData = {
-      ...result,
-      explanations,
-      otaRecommendation,
-      source: 'production',
-      updatedAt: new Date().toISOString(),
+    // NEW inference contract (authoritative):
+    // { anomaly_score, risk_level, threshold, soft_threshold, ... }
+    const score = upstream.data.anomaly_score;
+    const threshold = upstream.data.threshold;
+    const softThreshold = upstream.data.soft_threshold;
+    const risk_level = upstream.data.risk_level;
+
+    if (
+      typeof score !== 'number' ||
+      typeof threshold !== 'number' ||
+      typeof softThreshold !== 'number'
+    ) {
+      throw new AppError('Invalid inference response', 502);
+    }
+
+    // 3) Apply decision logic (strict 2-threshold policy)
+    let decision;
+    if (score >= threshold) {
+      decision = 'block';
+    } else if (score >= softThreshold) {
+      decision = 'delay';
+    } else {
+      decision = 'allow';
+    }
+
+    const now = new Date();
+    const anomalyState = {
+      score,
+      risk_level: typeof risk_level === 'string' ? risk_level : null,
+      decision,
+      threshold,
+      soft_threshold: softThreshold,
+      updated_at: now,
     };
+
+    // Persist current anomaly state ONLY in devices.anomaly
+    const updateResult = await db.collection('devices').updateOne(
+      { deviceId },
+      { $set: { anomaly: anomalyState } },
+      { upsert: false },
+    );
+    if (updateResult.matchedCount === 0) {
+      throw new AppError('Device not found', 404);
+    }
+
+    // Insert ONE record into anomaly_events per inference.
+    await db.collection('anomaly_events').insertOne({
+      deviceId,
+      score,
+      risk_level: anomalyState.risk_level,
+      decision,
+      threshold,
+      soft_threshold: softThreshold,
+      decided_at: now,
+      source: 'ml-inference',
+    });
 
     res.json({
       success: true,
-      data: responseData,
+      data: {
+        deviceId,
+        score,
+        risk_level: anomalyState.risk_level,
+        decision,
+        threshold,
+        soft_threshold: softThreshold,
+
+        // Backward-compatible aliases for existing UI (read-only display)
+        action: decision.toUpperCase(),
+        thresholds: { hard: threshold, soft: softThreshold },
+      },
     });
+
   } catch (error) {
     next(error);
   }
@@ -183,7 +163,7 @@ export const postAnomalyInferHandler = async (req, res, next) => {
 
 // Get anomalies history for a device
 // CRITICAL ARCHITECTURE RULE:
-// - This endpoint returns HISTORY ONLY (immutable events from anomalies collection)
+// - This endpoint returns HISTORY ONLY (immutable events from anomaly_events collection)
 // - It does NOT return current anomaly state
 // - It does NOT compute or derive current state from history
 // - Current anomaly state comes ONLY from GET /api/devices/:id (devices collection)
@@ -193,17 +173,31 @@ export const getAnomaliesHistoryHandler = async (req, res, next) => {
     const { limit = 50 } = req.query;
 
     const db = await getDb();
-    // CRITICAL: Return raw history only - no aggregation, no derived state
-    const anomalies = await db.collection('anomalies')
+
+    // LEGACY — anomalies collection is deprecated
+    // History must come from anomaly_events only.
+    const events = await db.collection('anomaly_events')
       .find({ deviceId })
-      .sort({ timestamp: -1 }) // Most recent first
+      .sort({ decided_at: -1 }) // Most recent first
       .limit(parseInt(limit, 10))
       .toArray();
 
     res.json({
       success: true,
-      data: anomalies,
-      count: anomalies.length,
+      data: events.map((event) => {
+        const threshold = event?.threshold;
+        const softThreshold = event?.soft_threshold;
+        const decision = event?.decision;
+
+        return {
+          ...event,
+          // Backward-compatible aliases for existing UI (read-only display)
+          action: typeof event?.action === 'string' ? event.action : (typeof decision === 'string' ? decision.toUpperCase() : undefined),
+          hard_threshold: typeof event?.hard_threshold === 'number' ? event.hard_threshold : (typeof threshold === 'number' ? threshold : undefined),
+          soft_threshold: typeof softThreshold === 'number' ? softThreshold : event?.soft_threshold,
+        };
+      }),
+      count: events.length,
     });
   } catch (error) {
     next(error);
