@@ -48,14 +48,6 @@
             </div>
         </div>
 
-        <!-- Top Drifting Features -->
-        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
-            <h3 class="text-lg font-semibold mb-4 text-gray-900">Top Drifting Features</h3>
-            <div id="driftFeatures" class="flex flex-wrap gap-2">
-                <div class="text-gray-500">Loading...</div>
-            </div>
-        </div>
-
         <!-- Quick Links -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <a href="/devices.html" class="block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-blue-500 transition">
@@ -85,54 +77,30 @@
         </div>
     </div>
 
-    <script type="module">
-        import { api } from './js/api.js';
+	    <script type="module">
+	        import { api } from './js/api.js';
 
-        async function loadStatistics() {
-            try {
-                const statsData = await api.devices.stats();
-                const stats = statsData.data || {};
-                
-                document.getElementById('statTotal').textContent = stats.total || 0;
-                document.getElementById('statNormal').textContent = stats.normal || 0;
-                document.getElementById('statAnomaly').textContent = stats.anomaly || 0;
-                document.getElementById('statWarning').textContent = stats.warning || 0;
-            } catch (error) {
-                console.error('Error loading statistics:', error);
-            }
-        }
+	        async function loadStatistics() {
+	            try {
+	                const statsData = await api.devices.stats();
+	                const stats = statsData.data || {};
+	                
+	                document.getElementById('statTotal').textContent = stats.total || 0;
+	                document.getElementById('statNormal').textContent = stats.normal || 0;
+	                document.getElementById('statAnomaly').textContent = stats.anomaly || 0;
+	                document.getElementById('statWarning').textContent = stats.warning || 0;
+	            } catch (error) {
+	                console.error('Error loading statistics:', error);
+	            }
+	        }
 
-        async function loadDriftFeatures() {
-            try {
-                const modelData = await api.model.info();
-                const model = modelData.data || {};
-                const driftFeatures = model.drift_features || [];
-                
-                if (driftFeatures.length === 0) {
-                    document.getElementById('driftFeatures').innerHTML = 
-                        '<span class="text-gray-500 text-sm">No drift detected</span>';
-                } else {
-                    const topFeatures = driftFeatures.slice(0, 5);
-                    document.getElementById('driftFeatures').innerHTML = topFeatures.map(feature => 
-                        `<span class="px-3 py-1 bg-red-50 border border-red-500 rounded text-red-700 text-sm">${feature}</span>`
-                    ).join('');
-                }
-            } catch (error) {
-                console.error('Error loading drift features:', error);
-                document.getElementById('driftFeatures').innerHTML = 
-                    '<span class="text-gray-500 text-sm">Unable to load drift features</span>';
-            }
-        }
+	        // Load data
+	        loadStatistics();
 
-        // Load data
-        loadStatistics();
-        loadDriftFeatures();
-
-        // Auto-refresh every 30s
-        setInterval(() => {
-            loadStatistics();
-            loadDriftFeatures();
-        }, 30000);
-    </script>
+	        // Auto-refresh every 30s
+	        setInterval(() => {
+	            loadStatistics();
+	        }, 30000);
+	    </script>
 </body>
 </html>
