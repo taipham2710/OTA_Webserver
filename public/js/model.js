@@ -3,13 +3,15 @@ import { ui } from './ui.js';
 
 let refreshInterval = null;
 
-// NOTE: Model metadata is provided by the ML pipeline via the inference service.
-// The frontend does NOT calculate or compute any model metrics.
-// All data comes from GET /api/model/info endpoint.
+// NOTE: Read-only operational UI.
+// - Does not compute/infer anomaly/drift/threshold policy.
+// - Renders only fields returned by GET /api/model/info.
 export const modelUI = {
   async load() {
-    // Show loading state
-    document.getElementById('modelCard').innerHTML = `
+    const modelCard = document.getElementById('modelCard');
+    if (!modelCard) return;
+
+    modelCard.innerHTML = `
       <div class="flex items-center justify-center p-8">
         <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
         <span class="ml-3 text-gray-600">Loading model metadata...</span>
@@ -33,41 +35,84 @@ export const modelUI = {
   },
 
   render(model) {
-    // NOTE: This UI strictly mirrors inference metadata from the backend.
-    // Backend GET /api/model/info returns: { version, train_date, window_minutes, feature_count, threshold, feature_importance }
-    // All field extraction must match backend keys exactly - no fallbacks or computed values.
+    const modelVersion = model.model_version ?? null;
+    const trainedAt = model.trained_at ?? null;
+    const trainingWindow = model.training_window ?? null;
+    const featureCount = model.feature_count ?? null;
+    const hardThreshold = model.threshold?.value ?? null;
+    const softThreshold = model.threshold?.soft_value ?? null;
 
-    // Extract required fields with safe defaults (matching backend keys exactly)
-    const modelVersion = model.version || null;
-    const trainDate = model.train_date || null;
-    const trainWindow = model.window_minutes || null;
-    const featureCount = model.feature_count !== undefined ? model.feature_count : null;
-    const threshold = model.threshold !== undefined ? model.threshold : null;
+    const modelName = model.model_name ?? null;
+    const algorithm = model.algorithm ?? null;
+    const trainRows = model.data?.train_rows ?? null;
+    const holdoutRows = model.data?.holdout_rows ?? null;
 
-    // Get top 5 features from feature_importance array
-    const featureImportance = model.feature_importance || [];
-    const topFeatures = Array.isArray(featureImportance) 
-      ? featureImportance.slice(0, 5).map(f => typeof f === 'string' ? f : (f.name || f))
+    const holdout = model.metrics?.holdout ?? null;
+    const precision = holdout?.precision ?? null;
+    const recall = holdout?.recall ?? null;
+    const f1 = holdout?.f1 ?? null;
+    const rocAuc = holdout?.roc_auc ?? null;
+    const prAuc = holdout?.pr_auc ?? null;
+
+    const featureImportance = Array.isArray(model.feature_importance)
+      ? model.feature_importance
       : [];
 
-    document.getElementById('modelCard').innerHTML = `
+    const topFeatures = featureImportance
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({ name: item.name ?? null, importance: item.importance ?? null }))
+      .filter(
+        (item) =>
+          typeof item.name === 'string' &&
+          typeof item.importance === 'number' &&
+          !Number.isNaN(item.importance),
+      )
+      .sort((a, b) => b.importance - a.importance)
+      .slice(0, 15);
+
+    const modelCard = document.getElementById('modelCard');
+    if (!modelCard) return;
+
+    modelCard.innerHTML = `
       <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <div class="mb-6">
           <h2 class="text-2xl font-bold mb-2 text-gray-900">Model Metadata</h2>
-          <p class="text-sm text-gray-500">Metadata provided by ML pipeline</p>
+          <p class="text-sm text-gray-500">Metadata provided by backend</p>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
           ${this.renderField('Model Version', modelVersion)}
-          ${this.renderField('Training Date', trainDate ? ui.formatDate(trainDate) : null)}
-          ${this.renderField('Training Window', trainWindow !== null ? `${trainWindow} minutes` : null)}
-          ${this.renderField('Feature Count', featureCount !== null ? featureCount.toString() : null)}
-          ${this.renderField('Threshold', threshold !== null ? threshold.toString() : null)}
+          ${this.renderField('Training Date', trainedAt ? ui.formatDate(trainedAt) : null)}
+          ${this.renderField('Training Window', trainingWindow !== null && trainingWindow !== undefined ? String(trainingWindow) : null)}
+          ${this.renderField('Feature Count', typeof featureCount === 'number' ? String(featureCount) : null)}
+          ${this.renderField('Hard Threshold', typeof hardThreshold === 'number' ? hardThreshold.toFixed(4) : null)}
+          ${this.renderField('Soft Threshold', typeof softThreshold === 'number' ? softThreshold.toFixed(4) : null)}
         </div>
 
         <div class="mt-6 pt-6 border-t border-gray-200">
-          <h3 class="text-lg font-semibold mb-3 text-gray-900">Top Features</h3>
-          ${this.renderTopFeatures(topFeatures)}
+          <h3 class="text-lg font-semibold mb-3 text-gray-900">Training Metadata</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            ${this.renderField('Model Name', modelName)}
+            ${this.renderField('Algorithm', algorithm)}
+            ${this.renderField('Train Rows', typeof trainRows === 'number' ? String(trainRows) : null)}
+            ${this.renderField('Holdout Rows', typeof holdoutRows === 'number' ? String(holdoutRows) : null)}
+          </div>
+        </div>
+
+        <div class="mt-6 pt-6 border-t border-gray-200">
+          <h3 class="text-lg font-semibold mb-3 text-gray-900">Evaluation Metrics (Holdout)</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            ${this.renderField('Precision', typeof precision === 'number' ? precision.toFixed(4) : null)}
+            ${this.renderField('Recall', typeof recall === 'number' ? recall.toFixed(4) : null)}
+            ${this.renderField('F1-score', typeof f1 === 'number' ? f1.toFixed(4) : null)}
+            ${this.renderField('ROC-AUC', typeof rocAuc === 'number' ? rocAuc.toFixed(4) : null)}
+            ${this.renderField('PR-AUC', typeof prAuc === 'number' ? prAuc.toFixed(4) : null)}
+          </div>
+        </div>
+
+        <div class="mt-6 pt-6 border-t border-gray-200">
+          <h3 class="text-lg font-semibold mb-3 text-gray-900">Top Feature Importance</h3>
+          ${this.renderFeatureImportanceTable(topFeatures)}
         </div>
       </div>
     `;
@@ -107,29 +152,32 @@ export const modelUI = {
     `;
   },
 
-  renderTopFeatures(features) {
-    // Show top 5 features from feature_importance array
-    // If empty or missing, show "Not available"
+  renderFeatureImportanceTable(features) {
     if (!features || features.length === 0) {
-      return '<p class="text-gray-400 text-sm">Not available</p>';
+      return '<p class="text-gray-400 text-sm">Feature importance not available</p>';
     }
 
     return `
-      <ul class="space-y-2">
-        ${features.map((feature, index) => {
-          const featureName = typeof feature === 'string' ? feature : (feature.name || feature);
-          const importance = typeof feature === 'object' && feature.importance !== undefined 
-            ? ` (${feature.importance.toFixed(4)})` 
-            : '';
-          return `
-            <li class="text-gray-900">
-              <span class="text-gray-500">${index + 1}.</span> 
-              <span class="font-medium">${featureName}</span>
-              ${importance ? `<span class="text-gray-400 text-sm">${importance}</span>` : ''}
-            </li>
-          `;
-        }).join('')}
-      </ul>
+      <div class="overflow-x-auto border border-gray-200 rounded-lg">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Rank</th>
+              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Feature Name</th>
+              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Importance</th>
+            </tr>
+          </thead>
+          <tbody class="bg-white divide-y divide-gray-200">
+            ${features.map((feature, index) => `
+              <tr>
+                <td class="px-4 py-2 text-sm text-gray-600">${index + 1}</td>
+                <td class="px-4 py-2 text-sm text-gray-900 font-medium">${feature.name}</td>
+                <td class="px-4 py-2 text-sm text-gray-700 font-mono">${feature.importance.toFixed(4)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
     `;
   },
 
@@ -149,4 +197,3 @@ export const modelUI = {
     }
   },
 };
-
