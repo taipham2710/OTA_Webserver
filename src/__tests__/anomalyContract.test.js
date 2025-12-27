@@ -3,7 +3,7 @@ import { describe, test, expect } from '@jest/globals';
 /**
  * Backend API Contract Validation Tests
  * 
- * These tests validate the structure and constraints of the anomaly API response
+ * These tests validate the structure and constraints of the anomaly inference API response
  * without requiring actual service dependencies.
  * 
  * Run these tests to ensure the API contract is always maintained.
@@ -12,7 +12,7 @@ import { describe, test, expect } from '@jest/globals';
 /**
  * Validates API response contract
  */
-function validateAnomalyResponse(response) {
+function validateInferResponse(response) {
   const errors = [];
 
   // Check structure
@@ -21,33 +21,46 @@ function validateAnomalyResponse(response) {
     return { valid: false, errors };
   }
 
-  // Check isAnomaly
-  if (typeof response.isAnomaly !== 'boolean') {
-    errors.push('isAnomaly must be a boolean');
+  // success wrapper
+  if (response.success !== true) {
+    errors.push('success must be true');
+    return { valid: false, errors };
   }
 
-  // Check anomalyScore
-  if (response.anomalyScore !== null && typeof response.anomalyScore !== 'number') {
-    errors.push('anomalyScore must be number or null');
+  if (!response.data || typeof response.data !== 'object') {
+    errors.push('data must be an object');
+    return { valid: false, errors };
   }
 
-  // Check threshold - CRITICAL: must be number, never null
-  if (typeof response.threshold !== 'number') {
-    errors.push('threshold must be a number (never null or undefined)');
+  const data = response.data;
+
+  if (typeof data.deviceId !== 'string' || data.deviceId.trim().length === 0) {
+    errors.push('deviceId must be a non-empty string');
   }
 
-  if (response.threshold === null || response.threshold === undefined) {
-    errors.push('threshold cannot be null or undefined');
+  if (typeof data.score !== 'number') {
+    errors.push('score must be a number');
   }
 
-  // Check mathematical consistency
-  if (response.anomalyScore !== null && typeof response.anomalyScore === 'number') {
-    const computedAnomaly = response.anomalyScore >= response.threshold;
-    if (response.isAnomaly !== computedAnomaly) {
-      errors.push(
-        `Mathematical inconsistency: isAnomaly=${response.isAnomaly} but ` +
-        `anomalyScore=${response.anomalyScore} >= threshold=${response.threshold} = ${computedAnomaly}`
-      );
+  if (data.risk_level !== null && typeof data.risk_level !== 'string') {
+    errors.push('risk_level must be a string or null');
+  }
+
+  if (!['allow', 'delay', 'block'].includes(data.decision)) {
+    errors.push('decision must be one of: allow | delay | block');
+  }
+
+  if (typeof data.threshold !== 'number') errors.push('threshold must be a number');
+  if (typeof data.soft_threshold !== 'number') errors.push('soft_threshold must be a number');
+
+  // Decision consistency: (score, thresholds) must match decision
+  if (typeof data.score === 'number' && typeof data.threshold === 'number' && typeof data.soft_threshold === 'number') {
+    if (data.score >= data.threshold && data.decision !== 'block') {
+      errors.push('Decision mismatch: score>=threshold must be block');
+    } else if (data.score < data.threshold && data.score >= data.soft_threshold && data.decision !== 'delay') {
+      errors.push('Decision mismatch: score>=soft_threshold must be delay');
+    } else if (data.score < data.soft_threshold && data.decision !== 'allow') {
+      errors.push('Decision mismatch: score<soft_threshold must be allow');
     }
   }
 
@@ -57,94 +70,98 @@ function validateAnomalyResponse(response) {
   };
 }
 
-describe('Backend API Contract Validation', () => {
-  test('should validate correct API response structure', () => {
+describe('Backend API Contract Validation (/api/anomaly/:deviceId/infer)', () => {
+  test('should validate correct inference response structure', () => {
     const response = {
-      isAnomaly: true,
-      anomalyScore: 0.8868,
-      threshold: 0.33,
+      success: true,
+      data: {
+        deviceId: 'dev-001',
+        score: 0.8868,
+        risk_level: 'low',
+        decision: 'delay',
+        threshold: 0.94,
+        soft_threshold: 0.7,
+      },
     };
 
-    const validation = validateAnomalyResponse(response);
+    const validation = validateInferResponse(response);
 
     expect(validation.valid).toBe(true);
     expect(validation.errors).toHaveLength(0);
   });
 
-  test('should fail if threshold is null', () => {
+  test('should fail if thresholds are missing', () => {
     const response = {
-      isAnomaly: true,
-      anomalyScore: 0.8868,
-      threshold: null, // INVALID
+      success: true,
+      data: {
+        deviceId: 'dev-001',
+        score: 0.2,
+        risk_level: 'low',
+        decision: 'allow',
+        // threshold missing
+        soft_threshold: 0.7,
+      },
     };
 
-    const validation = validateAnomalyResponse(response);
+    const validation = validateInferResponse(response);
 
     expect(validation.valid).toBe(false);
     expect(validation.errors.some(e => e.includes('threshold'))).toBe(true);
   });
 
-  test('should fail if threshold is undefined', () => {
+  test('should fail if soft_threshold is missing', () => {
     const response = {
-      isAnomaly: true,
-      anomalyScore: 0.8868,
-      // threshold missing
+      success: true,
+      data: {
+        deviceId: 'dev-001',
+        score: 0.2,
+        risk_level: 'low',
+        decision: 'allow',
+        threshold: 0.94,
+        // soft_threshold missing
+      },
     };
 
-    const validation = validateAnomalyResponse(response);
+    const validation = validateInferResponse(response);
 
     expect(validation.valid).toBe(false);
-    expect(validation.errors.some(e => e.includes('threshold'))).toBe(true);
+    expect(validation.errors.some(e => e.includes('soft_threshold'))).toBe(true);
   });
 
-  test('should fail if isAnomaly is not boolean', () => {
+  test('should enforce decision: score >= threshold => block', () => {
     const response = {
-      isAnomaly: 'true', // INVALID: string instead of boolean
-      anomalyScore: 0.8868,
-      threshold: 0.33,
+      success: true,
+      data: {
+        deviceId: 'dev-001',
+        score: 0.95,
+        risk_level: 'high',
+        decision: 'block',
+        threshold: 0.94,
+        soft_threshold: 0.7,
+      },
     };
 
-    const validation = validateAnomalyResponse(response);
+    const validation = validateInferResponse(response);
 
-    expect(validation.valid).toBe(false);
-    expect(validation.errors.some(e => e.includes('isAnomaly'))).toBe(true);
+    expect(validation.valid).toBe(true);
   });
 
-  test('should enforce mathematical consistency', () => {
+  test('should fail on decision mismatch', () => {
     const inconsistentResponse = {
-      isAnomaly: false, // Says normal
-      anomalyScore: 0.8868, // But score is high
-      threshold: 0.33, // And above threshold
+      success: true,
+      data: {
+        deviceId: 'dev-001',
+        score: 0.95,
+        risk_level: 'low',
+        decision: 'allow', // INVALID
+        threshold: 0.94,
+        soft_threshold: 0.7,
+      },
     };
 
-    const validation = validateAnomalyResponse(inconsistentResponse);
+    const validation = validateInferResponse(inconsistentResponse);
 
     expect(validation.valid).toBe(false);
-    expect(validation.errors.some(e => e.includes('Mathematical inconsistency'))).toBe(true);
-  });
-
-  test('should allow null anomalyScore with valid threshold', () => {
-    const response = {
-      isAnomaly: false,
-      anomalyScore: null,
-      threshold: 0.5,
-    };
-
-    const validation = validateAnomalyResponse(response);
-
-    expect(validation.valid).toBe(true);
-  });
-
-  test('should validate edge case: score equals threshold', () => {
-    const response = {
-      isAnomaly: true,
-      anomalyScore: 0.5,
-      threshold: 0.5, // Equal
-    };
-
-    const validation = validateAnomalyResponse(response);
-
-    // score >= threshold when equal, so isAnomaly should be true
-    expect(validation.valid).toBe(true);
+    expect(validation.errors.some(e => e.includes('Decision mismatch'))).toBe(true);
   });
 });

@@ -2,46 +2,42 @@
 
 ## Overview
 
-This test suite validates end-to-end consistency between backend anomaly inference results and frontend UI rendering logic. It ensures that the ML Ops pipeline maintains data integrity from API response through UI display.
+This test suite validates end-to-end consistency between backend policy decisions and frontend UI rendering logic. The UI is read-only and must render persisted anomaly state without deriving risk/action.
 
 ## Test Files
 
-### 1. `anomalyService.test.js`
+### 1. `anomalyContract.test.js`
 **Backend API Contract Validation**
 
-Tests that `/api/anomaly/:deviceId` always returns:
-- `isAnomaly`: boolean
-- `anomalyScore`: number | null
-- `threshold`: number (NEVER null)
+Tests that `POST /api/anomaly/:deviceId/infer` returns:
+- `success: true`
+- `data.deviceId`: string
+- `data.score`: number
+- `data.risk_level`: string | null
+- `data.decision`: `"allow" | "delay" | "block"`
+- `data.threshold`: number
+- `data.soft_threshold`: number
 
 **Key Assertions:**
-- Threshold is always a number, even on errors
 - API contract structure is consistent
-- Threshold sourced from model metadata with fallback to 0.5
-- Mathematical consistency: `isAnomaly === (anomalyScore >= threshold)` when score exists
+- Decision consistency: decision must match (score, threshold, soft_threshold)
 
 ### 2. `anomalyLogic.test.js`
 **Frontend Logic Unit Tests**
 
-Validates frontend correctly interprets backend API response:
-- Uses `anomalyScore` field, never `score` field
-- Trusts backend `isAnomaly` flag (does not recompute)
-- Handles null values safely (no `toFixed` on null)
-- Correct recommendation logic
+Validates frontend correctly renders `devices.anomaly`:
+- No computation/derivation of risk/action from score
+- Null-safe rendering (no `toFixed` on null/undefined)
 
 **Test Cases:**
-- Backend `isAnomaly: true` → UI shows "Anomaly Detected"
-- Backend `isAnomaly: false` → UI shows "Normal"
-- Null score handling
-- Edge cases (score < threshold but backend says anomaly)
+- Renders `risk_level` + `action` + thresholds when present
+- Handles missing anomaly state
 
 ### 3. `anomalyIntegration.test.js`
 **End-to-End Consistency Validation**
 
-Tests complete flow from backend API to frontend UI:
-- No contradictions between backend and frontend
-- Backend is source of truth
-- Mathematical consistency validation
+Tests complete flow from persisted state to UI rendering:
+- UI trusts backend-provided fields and does not derive them
 
 ## Running Tests
 
@@ -51,18 +47,14 @@ npm test
 
 ## Test Coverage
 
-- ✅ Backend API contract validation
-- ✅ Frontend field extraction (anomalyScore vs score)
-- ✅ Backend isAnomaly flag trust
-- ✅ Null-safe rendering
-- ✅ Edge case handling
-- ✅ End-to-end consistency
+- Backend API contract validation
+- Null-safe rendering
+- End-to-end consistency
 
 ## Success Criteria
 
 All tests must pass to ensure:
-1. UI never contradicts backend anomaly result
-2. UI always uses `anomalyScore`, never `score`
-3. UI trusts backend `isAnomaly` flag
+1. UI is strictly read-only for anomaly decisions
+2. UI renders current state only from `devices.anomaly`
+3. UI renders history only from `anomaly_events`
 4. UI is null-safe (no `toFixed` on null/undefined)
-5. Recommendation logic is mathematically and semantically correct
