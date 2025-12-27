@@ -35,16 +35,21 @@
 
     <script type="module">
         import { modelUI } from './js/model.js';
+        import { realtime } from './js/realtime.js';
 
-        // Initial load on tab open
         await modelUI.load();
 
-        // Auto-refresh every 30s
-        modelUI.startAutoRefresh(30000);
+        // Connect realtime
+        realtime.connect();
 
-        // Cleanup on page unload
+        // Reload model info ONLY when model is updated
+        realtime.on('model_updated', () => {
+            console.log('[model] model_updated event received → reload metadata');
+            modelUI.load();
+        });
+
         window.addEventListener('beforeunload', () => {
-            modelUI.stopAutoRefresh();
+            realtime.disconnect();
         });
     </script>
 </body>
