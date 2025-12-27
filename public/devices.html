@@ -99,24 +99,27 @@
                                 </td>
                                 <td class="px-4 py-3">
                                     ${(() => {
-                                        // STRICT: Only show anomaly badge when isAnomaly === true
-                                        // Do NOT infer from anomalyScore or history
-                                        if (device.isAnomaly === true) {
-                                            const score = (device.anomalyScore !== null && device.anomalyScore !== undefined && typeof device.anomalyScore === 'number')
-                                                ? device.anomalyScore.toFixed(2)
-                                                : '';
-                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800" title="Score: ${score}">Anomaly</span>`;
-                                        } else {
-                                            // isAnomaly === false or undefined/null → show Normal or N/A
-                                            if (device.isAnomaly === false) {
-                                                const score = (device.anomalyScore !== null && device.anomalyScore !== undefined && typeof device.anomalyScore === 'number')
-                                                    ? device.anomalyScore.toFixed(2)
-                                                    : '';
-                                                return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800" title="Score: ${score}">Normal</span>`;
-                                            } else {
-                                                return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
-                                            }
+                                        const anomaly = device.anomaly || null;
+                                        if (!anomaly || !anomaly.risk_level) {
+                                            return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
                                         }
+
+                                        const score = (typeof anomaly.score === 'number')
+                                            ? anomaly.score.toFixed(3)
+                                            : '';
+                                        const title = score ? `Score: ${score}` : '';
+
+                                        if (anomaly.risk_level === 'high') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800" title="${title}">High</span>`;
+                                        }
+                                        if (anomaly.risk_level === 'warning') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800" title="${title}">Warning</span>`;
+                                        }
+                                        if (anomaly.risk_level === 'low') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800" title="${title}">Low</span>`;
+                                        }
+
+                                        return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800" title="${title}">N/A</span>`;
                                     })()}
                                 </td>
                                 <td class="px-4 py-3 text-sm text-gray-600">${ui.formatDate(device.lastSeenAt || device.lastCheckin || device.lastSeen)}</td>

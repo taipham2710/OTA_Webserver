@@ -422,15 +422,16 @@
                                 <div class="text-sm text-gray-600">Anomaly Status</div>
                                 <div>
                                     ${(() => {
-                                        // STRICT: Only show anomaly badge when isAnomaly === true
-                                        // Do NOT infer from anomalyScore or history
-                                        if (device.isAnomaly === true) {
-                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">Anomaly</span>`;
-                                        } else if (device.isAnomaly === false) {
-                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">Normal</span>`;
-                                        } else {
-                                            return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
+                                        const anomaly = device.anomaly || null;
+                                        const risk = anomaly?.risk_level || null;
+                                        if (risk === 'high') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">High</span>`;
+                                        } else if (risk === 'warning') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">Warning</span>`;
+                                        } else if (risk === 'low') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">Low</span>`;
                                         }
+                                        return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
                                     })()}
                                 </div>
                             </div>
@@ -457,47 +458,29 @@
             if (!banner) return;
 
             try {
-                // STRICT: Get device to check isAnomaly (single source of truth)
+                // READ-ONLY: Use current anomaly state from devices collection only
                 const deviceData = await api.devices.get(deviceId);
                 const device = deviceData.data;
 
-                // HARD RULE: Show banner ONLY if device.isAnomaly === true
-                if (device.isAnomaly !== true) {
+                const anomaly = device.anomaly || null;
+                const action = anomaly?.action || null;
+                const risk = anomaly?.risk_level || null;
+                const scoreText = typeof anomaly?.score === 'number' ? anomaly.score.toFixed(4) : 'N/A';
+                const updatedAt = anomaly?.updated_at || null;
+
+                // Show banner only when backend action is DELAY or BLOCK
+                if (action !== 'DELAY' && action !== 'BLOCK') {
                     banner.classList.add('hidden');
                     return;
                 }
 
-                const data = await api.devices.anomalies(deviceId, { limit: 1 });
-                const events = Array.isArray(data.data) ? data.data : [];
-
-                if (!events.length || !events[0].otaRecommendation) {
-                    banner.classList.add('hidden');
-                    return;
-                }
-
-                const latest = events[0];
-                const recommendation = latest.otaRecommendation;
-                const action = (recommendation.action || 'allow').toUpperCase();
-                const confidence = typeof recommendation.confidence === 'number'
-                    ? Math.round(recommendation.confidence * 100)
-                    : 0;
-                const reasons = recommendation.reason || [];
-                const timestamp = formatTime(latest.timestamp);
-
-                banner.className = `ota-recommendation-banner ${recommendation.action || 'allow'}`;
+                const cssAction = String(action).toLowerCase();
+                banner.className = `ota-recommendation-banner ${cssAction}`;
                 banner.innerHTML = `
-                    <div class="action">OTA Recommendation (Decision Support): ${action}</div>
-                    <div class="confidence">Confidence: ${confidence}%</div>
-                    ${reasons.length > 0 ? `
-                    <div class="reason-section">
-                        <b>Reason:</b>
-                        <ul>
-                            ${reasons.map(r => `<li>${r}</li>`).join('')}
-                        </ul>
-                    </div>
-                    ` : ''}
+                    <div class="action">OTA Action (from inference): ${action}</div>
+                    <div class="confidence">Risk: ${risk || 'N/A'} — Score: ${scoreText}</div>
                     <div class="footer">
-                        Last evaluated: ${timestamp}
+                        Last evaluated: ${ui.formatDate(updatedAt)}
                         <a href="#" onclick="showTab('anomaly'); return false;">View details → Anomaly Timeline</a>
                     </div>
                 `;
@@ -552,31 +535,33 @@
                             <div class="font-medium text-gray-900">${device.metricCount || 0}</div>
                         </div>
                     </div>
-                    <div class="mt-6 pt-6 border-t border-gray-200">
-                        <h3 class="text-sm font-semibold text-gray-900 mb-3">Anomaly Status</h3>
-                        <div class="space-y-2">
-                            <div class="flex items-center space-x-3">
-                                ${(() => {
-                                    // STRICT: Only show anomaly badge when isAnomaly === true
-                                    // Do NOT infer from anomalyScore or history
-                                    if (device.isAnomaly === true) {
-                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-red-100 text-red-800">Anomaly</span>`;
-                                    } else if (device.isAnomaly === false) {
-                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-green-100 text-green-800">Normal</span>`;
-                                    } else {
-                                        return '<span class="px-3 py-1 rounded-md text-sm font-medium bg-gray-100 text-gray-800">N/A</span>';
-                                    }
-                                })()}
-                                ${device.anomalyScore !== null && device.anomalyScore !== undefined && typeof device.anomalyScore === 'number'
-                                    ? `<span class="text-sm text-gray-600">Score: ${device.anomalyScore.toFixed(3)}</span>`
-                                    : ''}
-                            </div>
-                            <p class="text-xs text-gray-500 mt-2">
-                                Anomaly score is generated by the inference model based on recent metrics.
-                            </p>
-                        </div>
-                    </div>
-                </div>
+	                    <div class="mt-6 pt-6 border-t border-gray-200">
+	                        <h3 class="text-sm font-semibold text-gray-900 mb-3">Anomaly Status</h3>
+	                        <div class="space-y-2">
+	                            <div class="flex items-center space-x-3">
+	                                ${(() => {
+	                                    // READ-ONLY: anomaly status comes ONLY from devices.anomaly
+	                                    const anomaly = device.anomaly || null;
+	                                    const risk = anomaly?.risk_level || null;
+	                                    if (risk === 'high') {
+	                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-red-100 text-red-800">High</span>`;
+	                                    } else if (risk === 'warning') {
+	                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-yellow-100 text-yellow-800">Warning</span>`;
+	                                    } else if (risk === 'low') {
+	                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-green-100 text-green-800">Low</span>`;
+	                                    }
+	                                    return '<span class="px-3 py-1 rounded-md text-sm font-medium bg-gray-100 text-gray-800">N/A</span>';
+	                                })()}
+	                                ${device.anomaly && typeof device.anomaly.score === 'number'
+	                                    ? `<span class="text-sm text-gray-600">Score: ${device.anomaly.score.toFixed(4)}</span>`
+	                                    : ''}
+	                            </div>
+	                            <p class="text-xs text-gray-500 mt-2">
+	                                Anomaly state is generated by the inference service based on recent metrics.
+	                            </p>
+	                        </div>
+	                    </div>
+	                </div>
             `;
 
             // Load OTA recommendation banner after rendering info tab
@@ -1314,172 +1299,67 @@
             });
         }
 
-        // Engineering Report Style - Render OTA Banner
-        function renderOTABanner(recommendation, banner) {
-            if (!recommendation || !recommendation.action) {
+        // Render OTA decision banner from current anomaly state (devices.anomaly)
+        function renderOTABanner(anomalyState, banner) {
+            if (!anomalyState || !anomalyState.action) {
                 banner.classList.add('hidden');
                 return;
             }
 
-            const action = recommendation.action.toUpperCase();
-            const confidence = typeof recommendation.confidence === 'number'
-                ? Math.round(recommendation.confidence * 100)
-                : 0;
-            const reasons = recommendation.reason || [];
+            const action = String(anomalyState.action).toUpperCase();
+            const risk = anomalyState.risk_level || 'N/A';
+            const score = typeof anomalyState.score === 'number' ? anomalyState.score.toFixed(4) : 'N/A';
+            const hard = typeof anomalyState.hard_threshold === 'number' ? anomalyState.hard_threshold.toFixed(4) : 'N/A';
+            const soft = typeof anomalyState.soft_threshold === 'number' ? anomalyState.soft_threshold.toFixed(4) : 'N/A';
 
-            banner.className = `ota-banner ${recommendation.action}`;
+            const cssAction = String(anomalyState.action).toLowerCase();
+            banner.className = `ota-banner ${cssAction}`;
             banner.innerHTML = `
-                <div class="action">OTA Recommendation (Decision Support): ${action}</div>
-                <div class="confidence">Confidence: ${confidence}%</div>
-                ${reasons.length > 0 ? `
+                <div class="action">OTA Action (from inference): ${action}</div>
+                <div class="confidence">Risk: ${risk} — Score: ${score}</div>
                 <div class="section">
-                    <b>Reason:</b>
+                    <b>Thresholds:</b>
                     <ul>
-                        ${reasons.map(r => `<li>${r}</li>`).join('')}
+                        <li>Hard: ${hard}</li>
+                        <li>Soft: ${soft}</li>
                     </ul>
                 </div>
-                ` : ''}
             `;
             banner.classList.remove('hidden');
         }
 
-        // Render Anomaly Event (from persisted events only)
-        // CRITICAL: This function renders HISTORICAL data only
-        // - event.anomalyScore is the score AT THE TIME the event was created
-        // - This is NOT the current anomaly score
-        // - Current anomaly score is ONLY displayed in Overview/Info tab from devices collection
+        // Render Anomaly Event (history from anomaly_events only)
         function renderAnomalyEvent(event) {
-            if (!event || !event.timestamp) {
+            if (!event || !event.decided_at) {
                 return '';
             }
 
-            const timestamp = formatTime(event.timestamp);
-            // CRITICAL: This score is HISTORICAL - from when event was created
-            const score = typeof event.anomalyScore === 'number' ? event.anomalyScore.toFixed(2) : null;
-            const threshold = typeof event.threshold === 'number' ? event.threshold.toFixed(2) : null;
-
-            // Get first explanation if exists
-            const exp = event.explanations && event.explanations.length > 0
-                ? event.explanations[0]
-                : null;
-
-            // OTA Recommendation if exists
-            const otaRec = event.otaRecommendation;
-
-            // Build sections conditionally
-            let metaSection = '';
-            let explanationSection = '';
-            let evidenceSection = '';
-            let otaSection = '';
-
-            // Meta section (Category, Severity, Risk) - only if explanation exists
-            if (exp) {
-                const metaItems = [];
-                if (exp.category) {
-                    metaItems.push(`<div><b>Category:</b> ${exp.category}</div>`);
-                }
-                if (exp.severity) {
-                    metaItems.push(`<div><b>Severity:</b> <span class="severity-${exp.severity}">${exp.severity}</span></div>`);
-                }
-                if (exp.risk) {
-                    metaItems.push(`<div><b>Risk:</b> ${exp.risk}</div>`);
-                }
-                if (metaItems.length > 0) {
-                    metaSection = `<div class="meta">${metaItems.join('')}</div>`;
-                }
-            }
-
-            // Explanation section - only if interpretation exists
-            if (exp && exp.interpretation) {
-                explanationSection = `
-                    <div class="section">
-                        <b>Explanation:</b>
-                        <div>${exp.interpretation}</div>
-                    </div>
-                `;
-            }
-
-            // Evidence section - only if evidence exists
-            if (exp && exp.evidence && Object.keys(exp.evidence).length > 0) {
-                const evidenceItems = Object.entries(exp.evidence)
-                    .map(([k, v]) => {
-                        let formattedValue = v;
-                        if (typeof v === 'number') {
-                            if (k.includes('pct') || k.includes('percent')) {
-                                formattedValue = `${v.toFixed(1)}`;
-                            } else if (k.includes('ms') || k.includes('latency')) {
-                                formattedValue = `${v.toFixed(0)}`;
-                            } else if (k.includes('mb') || k.includes('storage')) {
-                                formattedValue = `${v.toFixed(0)}`;
-                            } else if (k.includes('rssi') || k.includes('dbm')) {
-                                formattedValue = `${v.toFixed(0)}`;
-                            } else {
-                                formattedValue = v.toFixed(2);
-                            }
-                        }
-                        return `<li>${k}: ${formattedValue}</li>`;
-                    })
-                    .join('');
-
-                evidenceSection = `
-                    <div class="section">
-                        <b>Evidence:</b>
-                        <ul>
-                            ${evidenceItems}
-                        </ul>
-                    </div>
-                `;
-            }
-
-            // OTA Recommendation section - only if exists
-            if (otaRec && otaRec.action) {
-                const action = otaRec.action.toUpperCase();
-                const confidence = typeof otaRec.confidence === 'number'
-                    ? Math.round(otaRec.confidence * 100)
-                    : 0;
-                const reasons = otaRec.reason || [];
-
-                let reasonsHtml = '';
-                if (reasons.length > 0) {
-                    reasonsHtml = `
-                        <ul>
-                            ${reasons.map(r => `<li>${r}</li>`).join('')}
-                        </ul>
-                    `;
-                }
-
-                otaSection = `
-                    <div class="section">
-                        <b>OTA Recommendation (Decision Support):</b>
-                        <div>${action}${confidence > 0 ? ` (${confidence}%)` : ''}</div>
-                        ${reasonsHtml}
-                    </div>
-                `;
-            }
-
-            // Build headline with score/threshold
-            let headline = 'Anomaly detected';
-            if (score !== null && threshold !== null) {
-                headline = `Anomaly detected (score: ${score} / threshold: ${threshold})`;
-            } else if (score !== null) {
-                headline = `Anomaly detected (score: ${score})`;
-            }
+            const timestamp = formatTime(event.decided_at);
+            const score = typeof event.score === 'number' ? event.score.toFixed(4) : 'N/A';
+            const hard = typeof event.hard_threshold === 'number' ? event.hard_threshold.toFixed(4) : 'N/A';
+            const soft = typeof event.soft_threshold === 'number' ? event.soft_threshold.toFixed(4) : 'N/A';
+            const risk = event.risk_level || 'N/A';
+            const action = event.action || 'N/A';
+            const modelVersion = event.model_version || 'N/A';
 
             return `
                 <div class="anomaly-event">
                     <div class="timestamp">[${timestamp}]</div>
-                    <div class="headline">${headline}</div>
-                    ${metaSection}
-                    ${explanationSection}
-                    ${evidenceSection}
-                    ${otaSection}
+                    <div class="headline">Inference Decision</div>
+                    <div class="meta">
+                        <div><b>Action:</b> ${action}</div>
+                        <div><b>Risk:</b> ${risk}</div>
+                        <div><b>Score:</b> ${score}</div>
+                        <div><b>Hard:</b> ${hard} <b style="margin-left:8px;">Soft:</b> ${soft}</div>
+                        <div><b>Model:</b> ${modelVersion}</div>
+                    </div>
                 </div>
             `;
         }
 
         // Load anomalies (lazy loading - only when tab is opened)
         // CRITICAL ARCHITECTURE RULE:
-        // - This function ONLY renders HISTORY (anomalies collection)
+        // - This function ONLY renders HISTORY (anomaly_events collection)
         // - It NEVER updates device header/overview
         // - It NEVER displays current anomaly score
         // - It NEVER derives current state from events
@@ -1499,24 +1379,21 @@
                     return;
                 }
 
-                // === OTA Banner (only show if current device state is anomalous) ===
-                // CRITICAL: Fetch current device state separately for banner visibility ONLY
-                // This does NOT update device header - it's only used for banner visibility check
+                // === OTA Banner (best-effort: use current devices.anomaly only) ===
                 const deviceData = await api.devices.get(deviceId);
                 const device = deviceData.data;
 
-                // OTA banner visibility depends on CURRENT state from devices collection, not history
-                // CRITICAL: We use events[0] ONLY for recommendation content, NOT for state
-                if (device.isAnomaly === true && events[0]?.otaRecommendation) {
-                    renderOTABanner(events[0].otaRecommendation, otaBanner);
+                const current = device.anomaly || null;
+                if (current && current.action) {
+                    renderOTABanner(current, otaBanner);
                 } else {
                     otaBanner.classList.add('hidden');
                 }
 
-                // === Render anomaly timeline (ALWAYS visible - it's history) ===
-                // CRITICAL: Timeline entries show HISTORICAL scores from events, NOT current state
-                // Each event.anomalyScore is from when the event was created, not current score
-                container.innerHTML = events.map(renderAnomalyEvent).join('');
+	                // === Render anomaly timeline (ALWAYS visible - it's history) ===
+	                // CRITICAL: Timeline entries show HISTORICAL scores from events, NOT current state
+	                // Each event.score is from when the event was created, not current score
+	                container.innerHTML = events.map(renderAnomalyEvent).join('');
 
             } catch (err) {
                 container.innerHTML = '<div class="loading">Failed to load anomaly events.</div>';
