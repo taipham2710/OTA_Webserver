@@ -11,6 +11,8 @@ import otaRoutes from './src/routes/otaRoutes.js';
 import deviceRoutes from './src/routes/deviceRoutes.js';
 import modelRoutes from './src/routes/modelRoutes.js';
 import healthRoutes from './src/routes/healthRoutes.js';
+import inferenceRoutes from './src/routes/inferenceRoutes.js';
+import uiRoutes from './src/routes/uiRoutes.js';
 import { setServerReady } from './src/controllers/healthController.js';
 import { ensureBucketExists } from './src/clients/minio.js';
 import { getMongoClient } from './src/clients/mongodb.js';
@@ -44,6 +46,8 @@ app.use('/api/anomaly', anomalyRoutes);
 app.use('/api/ota', otaRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/model', modelRoutes);
+app.use('/api/inference', inferenceRoutes);
+app.use('/api/ui', uiRoutes);
 app.use('/health', healthRoutes);
 
 app.use(errorHandler);
@@ -85,4 +89,3 @@ startServer().catch((error) => {
   console.error('Failed to start server:', error);
   process.exit(1);
 });
-

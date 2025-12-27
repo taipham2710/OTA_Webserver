@@ -104,6 +104,9 @@ export const config = {
   socket: {
     authToken: getRequiredEnv('SOCKET_AUTH_TOKEN', 'local-secret-token'),
   },
+  grafana: {
+    url: process.env.GRAFANA_URL || '',
+  },
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
   },
