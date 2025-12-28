@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anomaly Analysis</title>
+    <title>Early Warning Analysis</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50">
@@ -11,7 +11,8 @@
         <div class="mb-4">
             <a href="/" class="text-blue-600 hover:underline">← Back to Dashboard</a>
         </div>
-        <h1 class="text-3xl font-bold mb-6">Anomaly Analysis</h1>
+        <h1 class="text-3xl font-bold mb-2">Early Warning Analysis</h1>
+        <p class="text-sm text-gray-600 mb-6">Anomalies are early warning signals, not necessarily errors.</p>
 
         <div class="bg-white rounded-lg shadow p-6 mb-6">
             <form id="queryForm" class="space-y-4">
@@ -22,20 +23,170 @@
                 </div>
                 <button type="submit"
                     class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-                    Analyze Anomalies
+                    Run Check
                 </button>
             </form>
         </div>
 
         <div id="result" class="hidden bg-white rounded-lg shadow p-6">
-            <h2 class="text-xl font-semibold mb-4">Analysis Result</h2>
-            <div id="resultContent" class="space-y-4">
-                <pre class="bg-gray-100 p-4 rounded text-sm overflow-auto"></pre>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Analysis Result</h2>
+                <div id="resultBadge" class="text-sm"></div>
             </div>
+
+            <div class="border-b border-gray-200 mb-4">
+                <nav class="-mb-px flex space-x-6" aria-label="Tabs">
+                    <button id="tab-ew" type="button"
+                        class="tab-btn whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-blue-500 text-blue-600">
+                        Early Warning Signal
+                    </button>
+                    <button id="tab-risk" type="button"
+                        class="tab-btn whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                        Risk &amp; Decision
+                    </button>
+                </nav>
+            </div>
+
+            <div id="tabContent-ew" class="space-y-4"></div>
+            <div id="tabContent-risk" class="space-y-4 hidden"></div>
         </div>
     </div>
 
     <script>
+        const recentChecks = [];
+        const RECENT_CHECKS_MAX = 5;
+
+        function asZeroToOne(value) {
+            // Presentation guard only (no inference): supports small decimals safely.
+            if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+            if (value < 0 || value > 1) return null;
+            return value;
+        }
+
+        function setActiveTab(tab) {
+            const ewBtn = document.getElementById('tab-ew');
+            const riskBtn = document.getElementById('tab-risk');
+            const ew = document.getElementById('tabContent-ew');
+            const risk = document.getElementById('tabContent-risk');
+
+            if (!ewBtn || !riskBtn || !ew || !risk) return;
+
+            const isEw = tab === 'ew';
+            ew.classList.toggle('hidden', !isEw);
+            risk.classList.toggle('hidden', isEw);
+
+            ewBtn.classList.toggle('border-blue-500', isEw);
+            ewBtn.classList.toggle('text-blue-600', isEw);
+            ewBtn.classList.toggle('border-transparent', !isEw);
+            ewBtn.classList.toggle('text-gray-500', !isEw);
+
+            riskBtn.classList.toggle('border-blue-500', !isEw);
+            riskBtn.classList.toggle('text-blue-600', !isEw);
+            riskBtn.classList.toggle('border-transparent', isEw);
+            riskBtn.classList.toggle('text-gray-500', isEw);
+        }
+
+        function renderRiskBadge(riskLevel) {
+            const risk = typeof riskLevel === 'string' ? riskLevel : null;
+            if (!risk) return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
+            if (risk === 'high') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">high</span>';
+            if (risk === 'medium') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">medium</span>';
+            if (risk === 'low') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">low</span>';
+            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">${risk}</span>`;
+        }
+
+        function renderYesNoBadge(value) {
+            if (value === true) return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">yes</span>';
+            if (value === false) return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">no</span>';
+            return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
+        }
+
+        function renderSeverityBadge(severityBand) {
+            const band = typeof severityBand === 'string' ? severityBand : null;
+            if (!band) return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">N/A</span>';
+            if (band === 'critical') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">critical</span>';
+            if (band === 'high') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-800">high</span>';
+            if (band === 'elevated') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">elevated</span>';
+            if (band === 'normal') return '<span class="px-2 py-1 rounded-md text-xs font-medium bg-green-100 text-green-800">normal</span>';
+            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800">${band}</span>`;
+        }
+
+        function recommendationText({ risk_level, severity_band, is_anomaly }) {
+            // Read-only presentation mapping from backend-provided fields (no inference from score).
+            if (risk_level === 'low') return 'OTA update allowed';
+            if (risk_level === 'medium') return 'OTA update not recommended without caution';
+            if (risk_level === 'high') return 'OTA update blocked due to anomaly risk';
+
+            if (severity_band === 'normal') return 'OTA update allowed';
+            if (severity_band === 'elevated') return 'OTA update not recommended without caution';
+            if (severity_band === 'high' || severity_band === 'critical') return 'OTA update blocked due to anomaly risk';
+
+            if (is_anomaly === true) return 'OTA update not recommended without caution';
+            if (is_anomaly === false) return 'OTA update allowed';
+
+            return 'No recommendation available';
+        }
+
+        function pushRecentCheck(check) {
+            recentChecks.unshift(check);
+            if (recentChecks.length > RECENT_CHECKS_MAX) recentChecks.length = RECENT_CHECKS_MAX;
+        }
+
+        function elevatedCountHint() {
+            if (recentChecks.length === 0) return null;
+
+            const elevated = recentChecks.filter((c) => {
+                if (!c || typeof c !== 'object') return false;
+                if (c.risk_level === 'medium' || c.risk_level === 'high') return true;
+                if (c.severity_band === 'elevated' || c.severity_band === 'high' || c.severity_band === 'critical') return true;
+                return c.is_anomaly === true;
+            }).length;
+
+            return `${elevated} of last ${recentChecks.length} checks were elevated/high`;
+        }
+
+        function renderDeviationsTable(deviations) {
+            if (!Array.isArray(deviations) || deviations.length === 0) {
+                return '<p class="text-gray-400 text-sm">Deviations not available</p>';
+            }
+
+            const rows = deviations
+                .filter(d => d && typeof d === 'object')
+                .map((d) => ({
+                    feature: d.feature ?? d.name ?? null,
+                    value: d.value ?? null,
+                    reference: d.reference ?? d.ref ?? d.p99 ?? null,
+                }))
+                .filter(r => typeof r.feature === 'string' && r.feature.trim().length > 0);
+
+            if (rows.length === 0) {
+                return '<p class="text-gray-400 text-sm">Deviations not available</p>';
+            }
+
+            return `
+                <div class="overflow-x-auto border border-gray-200 rounded-lg">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Feature</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Value</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            ${rows.map(r => `
+                                <tr>
+                                    <td class="px-4 py-2 text-sm text-gray-900 font-medium">${r.feature}</td>
+                                    <td class="px-4 py-2 text-sm text-gray-700 font-mono">${r.value ?? 'N/A'}</td>
+                                    <td class="px-4 py-2 text-sm text-gray-700 font-mono">${r.reference ?? 'N/A'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
         document.getElementById('queryForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const deviceId = document.getElementById('deviceId').value.trim();
@@ -54,56 +205,180 @@
                 });
                 const data = await response.json();
                 const resultDiv = document.getElementById('result');
-                const resultContent = document.getElementById('resultContent');
+                const ewContent = document.getElementById('tabContent-ew');
+                const riskContent = document.getElementById('tabContent-risk');
+                const badge = document.getElementById('resultBadge');
 
                 if (response.ok && data.success && data.data) {
                     const result = data.data;
                     const score = typeof result.score === 'number' ? result.score : null;
-                    const hard = typeof result.thresholds?.hard === 'number' ? result.thresholds.hard : null;
-                    const soft = typeof result.thresholds?.soft === 'number' ? result.thresholds.soft : null;
+                    const hard = typeof result.threshold === 'number'
+                        ? result.threshold
+                        : (typeof result.thresholds?.hard === 'number' ? result.thresholds.hard : null);
+                    const soft = typeof result.soft_threshold === 'number'
+                        ? result.soft_threshold
+                        : (typeof result.thresholds?.soft === 'number' ? result.thresholds.soft : null);
                     const risk = result.risk_level || 'N/A';
-                    const action = result.action || 'N/A';
+                    const isAnomaly = (typeof result.is_anomaly === 'boolean') ? result.is_anomaly : null;
+                    const severityBand = (typeof result.severity_band === 'string') ? result.severity_band : null;
 
-                    resultContent.innerHTML = `
-                        <div class="space-y-4">
+                    pushRecentCheck({
+                        at: new Date().toISOString(),
+                        risk_level: (typeof result.risk_level === 'string') ? result.risk_level : null,
+                        is_anomaly: isAnomaly,
+                        severity_band: severityBand,
+                    });
+                    const hint = elevatedCountHint();
+                    const recommendation = recommendationText({
+                        risk_level: (typeof result.risk_level === 'string') ? result.risk_level : null,
+                        severity_band: severityBand,
+                        is_anomaly: isAnomaly,
+                    });
+
+                    if (badge) badge.innerHTML = renderRiskBadge(result.risk_level);
+
+                    if (ewContent) {
+                        ewContent.innerHTML = `
+                            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-900">
+                                <div class="font-semibold mb-1">Early Warning Signal</div>
+                                <div>This is NOT an error. It is an operational signal that the device behavior deviates from its normal baseline.</div>
+                            </div>
+
+                            <div class="bg-white border border-gray-200 rounded-lg p-4">
+                                <div class="font-semibold mb-2">Decision Summary</div>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <div class="text-xs text-gray-600">Risk Level</div>
+                                        <div class="mt-1">${renderRiskBadge(result.risk_level)}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-600">Is Anomaly</div>
+                                        <div class="mt-1">${renderYesNoBadge(isAnomaly)}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-600">Severity Band</div>
+                                        <div class="mt-1">${renderSeverityBadge(severityBand)}</div>
+                                    </div>
+                                </div>
+                                <div class="mt-3 text-sm text-gray-800"><b>Recommendation:</b> ${recommendation}</div>
+                                ${hint ? `<div class="mt-2 text-xs text-gray-500">${hint}</div>` : ''}
+                            </div>
+
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="p-4 bg-gray-50 rounded">
-                                    <div class="text-sm text-gray-600">Score</div>
+                                    <div class="text-sm text-gray-600">Anomaly Score</div>
                                     <div class="text-2xl font-bold">${typeof score === 'number' ? score.toFixed(4) : 'N/A'}</div>
+                                    <div class="text-xs text-gray-500 mt-2">This score is relative (not a probability). Higher means more abnormal.</div>
                                 </div>
                                 <div class="p-4 bg-gray-50 rounded">
                                     <div class="text-sm text-gray-600">Risk Level</div>
                                     <div class="text-2xl font-bold">${risk}</div>
                                 </div>
                             </div>
+
                             <div class="p-4 bg-gray-50 border border-gray-200 rounded">
-                                <div class="font-semibold mb-2">Action</div>
-                                <div>${action}</div>
+                                <div class="font-semibold mb-2">Deviations (Early Warning)</div>
+                                ${renderDeviationsTable(result.deviations)}
                             </div>
+                        `;
+                    }
+
+                    if (riskContent) {
+                        const styleVars = [
+                            asZeroToOne(soft) !== null ? `--soft:${soft}` : '',
+                            asZeroToOne(hard) !== null ? `--hard:${hard}` : '',
+                            asZeroToOne(score) !== null ? `--score:${score}` : '',
+                        ].filter(Boolean).join(';');
+
+                        riskContent.innerHTML = `
+                            <div class="bg-white border border-gray-200 rounded-lg p-4">
+                                <div class="font-semibold mb-2">Decision Summary</div>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <div class="text-xs text-gray-600">Risk Level</div>
+                                        <div class="mt-1">${renderRiskBadge(result.risk_level)}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-600">Is Anomaly</div>
+                                        <div class="mt-1">${renderYesNoBadge(isAnomaly)}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-600">Severity Band</div>
+                                        <div class="mt-1">${renderSeverityBadge(severityBand)}</div>
+                                    </div>
+                                </div>
+                                <div class="mt-3 text-sm text-gray-800"><b>Recommendation:</b> ${recommendation}</div>
+                                ${hint ? `<div class="mt-2 text-xs text-gray-500">${hint}</div>` : ''}
+                            </div>
+
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="p-4 bg-gray-50 rounded">
-                                    <div class="text-sm text-gray-600">Hard Threshold</div>
-                                    <div class="text-2xl font-bold">${typeof hard === 'number' ? hard.toFixed(4) : 'N/A'}</div>
+                                    <div class="text-sm text-gray-600">Operational Impact</div>
+                                    <div class="text-2xl font-bold">${recommendation}</div>
                                 </div>
                                 <div class="p-4 bg-gray-50 rounded">
-                                    <div class="text-sm text-gray-600">Soft Threshold</div>
-                                    <div class="text-2xl font-bold">${typeof soft === 'number' ? soft.toFixed(4) : 'N/A'}</div>
+                                    <div class="text-sm text-gray-600">Severity Band</div>
+                                    <div class="text-2xl font-bold">${severityBand ?? 'N/A'}</div>
+                                    <div class="text-xs text-gray-500 mt-2">Severity band is provided by the backend and is read-only.</div>
                                 </div>
                             </div>
-                        </div>
-                    `;
+
+                            <div class="p-4 bg-gray-50 border border-gray-200 rounded">
+                                <div class="font-semibold mb-3">Thresholds</div>
+                                <div class="text-xs text-gray-600 mb-2">Thresholds are distribution-based policy values (read-only). UI does not compute decisions.</div>
+                                <div class="relative h-4 rounded bg-white border border-gray-200" style="${styleVars}">
+                                    <div class="absolute top-0 bottom-0 left-0 bg-green-100 rounded-l" style="width: 25%"></div>
+                                    <div class="absolute top-0 bottom-0 left-1/4 bg-yellow-100" style="width: 25%"></div>
+                                    <div class="absolute top-0 bottom-0 left-2/4 bg-orange-100" style="width: 25%"></div>
+                                    <div class="absolute top-0 bottom-0 left-3/4 bg-red-100 rounded-r" style="width: 25%"></div>
+
+                                    ${asZeroToOne(soft) !== null ? `
+                                      <div class="absolute -top-2 bottom-0 w-0.5 bg-yellow-600" style="left: calc(var(--soft) * 100%)"></div>
+                                    ` : ''}
+                                    ${asZeroToOne(hard) !== null ? `
+                                      <div class="absolute -top-2 bottom-0 w-0.5 bg-red-600" style="left: calc(var(--hard) * 100%)"></div>
+                                    ` : ''}
+                                    ${asZeroToOne(score) !== null ? `
+                                      <div class="absolute -top-3 bottom-0 w-0.5 bg-gray-900" style="left: calc(var(--score) * 100%)"></div>
+                                    ` : ''}
+                                </div>
+
+                                <div class="grid grid-cols-3 gap-4 mt-3 text-sm">
+                                    <div>
+                                        <div class="text-xs text-gray-600">Score</div>
+                                        <div class="font-mono">${typeof score === 'number' ? score.toFixed(4) : 'N/A'}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-600">Soft Threshold</div>
+                                        <div class="font-mono">${typeof soft === 'number' ? soft.toFixed(4) : 'N/A'}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-600">Threshold</div>
+                                        <div class="font-mono">${typeof hard === 'number' ? hard.toFixed(4) : 'N/A'}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+
                     resultDiv.classList.remove('hidden');
+                    setActiveTab('ew');
                 } else {
                     const errorMsg = data.message || data.error || 'Inference failed';
-                    resultContent.innerHTML = `<div class="text-red-600">Error: ${errorMsg}</div>`;
+                    const errorHtml = `<div class="text-red-600">Error: ${errorMsg}</div>`;
+                    if (ewContent) ewContent.innerHTML = errorHtml;
+                    if (riskContent) riskContent.innerHTML = '';
                     resultDiv.classList.remove('hidden');
                 }
             } catch (error) {
-                document.getElementById('resultContent').innerHTML =
-                    `<div class="text-red-600">Error: ${error.message}</div>`;
+                const ewContent = document.getElementById('tabContent-ew');
+                if (ewContent) ewContent.innerHTML = `<div class="text-red-600">Error: ${error.message}</div>`;
                 document.getElementById('result').classList.remove('hidden');
             }
         });
+
+        document.getElementById('tab-ew')?.addEventListener('click', () => setActiveTab('ew'));
+        document.getElementById('tab-risk')?.addEventListener('click', () => setActiveTab('risk'));
     </script>
 </body>
 </html>
