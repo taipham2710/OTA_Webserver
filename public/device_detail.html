@@ -491,11 +491,11 @@
             }
         }
 
-        async function loadInfoTab(device) {
-            document.getElementById('infoContent').innerHTML = `
-                <div class="space-y-4">
-                    <!-- OTA Recommendation Banner -->
-                    <div id="otaRecommendationBanner" class="ota-recommendation-banner hidden"></div>
+	        async function loadInfoTab(device) {
+	            document.getElementById('infoContent').innerHTML = `
+	                <div class="space-y-4">
+	                    <!-- OTA Recommendation Banner -->
+	                    <div id="otaRecommendationBanner" class="ota-recommendation-banner hidden"></div>
 
                     <div class="grid grid-cols-2 gap-4">
                         <div>
@@ -561,12 +561,430 @@
 	                            </p>
 	                        </div>
 	                    </div>
+                        <!-- Anomaly Monitor (read-only) -->
+                        <div id="anomalyMonitor" class="mt-6 pt-6 border-t border-gray-200">
+                            <h3 class="text-sm font-semibold text-gray-900 mb-3">Anomaly Monitor</h3>
+                            <div class="text-sm text-gray-500">Loading anomaly monitor…</div>
+                        </div>
+                        <!-- Anomaly History Summary (read-only) -->
+                        <div id="anomalyHistorySummary" class="mt-6 pt-6 border-t border-gray-200">
+                            <h3 class="text-sm font-semibold text-gray-900 mb-3">Anomaly History Summary</h3>
+                            <div class="text-sm text-gray-500">Loading anomaly history summary…</div>
+                        </div>
 	                </div>
-            `;
+	            `;
 
-            // Load OTA recommendation banner after rendering info tab
-            await loadOTARecommendationBanner();
-        }
+	            // Load OTA recommendation banner after rendering info tab
+	            await loadOTARecommendationBanner();
+
+                // Anomaly Monitor (read-only)
+                startAnomalyMonitorPolling(device.deviceId || device.id);
+	        }
+
+            // =========================================================================
+            // Anomaly Monitor (read-only)
+            // - Fetches aggregated monitor state from stored anomaly_events only
+            // - Does NOT call inference
+            // - Safe polling every 30s
+            // =========================================================================
+            let anomalyMonitorInterval = null;
+            let currentMonitoredDeviceId = null;
+            let latestAnomalyHistorySummary = null; // used for monitor context only (read-only)
+
+            // =========================================================================
+            // Anomaly History Summary (read-only)
+            // This summary exists to support human operators.
+            // It provides historical context, not decisions.
+            // Operational safety decisions remain exclusively with the inference service.
+            // =========================================================================
+            async function fetchAnomalyHistorySummary(deviceId) {
+                const url = `/api/devices/${encodeURIComponent(deviceId)}/anomaly/summary`;
+                const res = await fetch(url, { method: 'GET' });
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                return res.json();
+            }
+
+            function renderAnomalyHistorySummary(container, payload) {
+                if (!container) return;
+                if (!payload || typeof payload !== 'object' || !payload.summary || typeof payload.summary !== 'object') {
+                    container.innerHTML = '<div class="text-sm text-gray-500">Anomaly history summary unavailable</div>';
+                    return;
+                }
+
+                const last24h = payload.summary.last_24h && typeof payload.summary.last_24h === 'object'
+                    ? payload.summary.last_24h
+                    : {};
+                const trend7d = payload.summary.trend_7d && typeof payload.summary.trend_7d === 'object'
+                    ? payload.summary.trend_7d
+                    : {};
+
+                const blockCount = typeof last24h.block_count === 'number' ? last24h.block_count : null;
+                const totalEvents = typeof last24h.total_events === 'number' ? last24h.total_events : null;
+
+                const directionRaw = typeof trend7d.direction === 'string' ? trend7d.direction : null;
+                const slope = typeof trend7d.score_slope === 'number' ? trend7d.score_slope : null;
+
+                const directionLabel =
+                    directionRaw === 'improving' ? 'Improving' :
+                    directionRaw === 'degrading' ? 'Degrading' :
+                    directionRaw === 'stable' ? 'Stable' :
+                    'N/A';
+
+                const directionHint =
+                    directionRaw === 'improving' ? 'Score trend decreasing' :
+                    directionRaw === 'degrading' ? 'Score trend increasing' :
+                    directionRaw === 'stable' ? 'No significant change' :
+                    null;
+
+                container.innerHTML = `
+                    <div class="space-y-3">
+                        <div class="text-xs text-gray-500">
+                            Trend describes whether anomaly severity is changing over time. It does NOT indicate whether OTA is safe or allowed.
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                <div class="text-xs text-gray-600 mb-1">BLOCK actions in last 24h</div>
+                                <div class="text-lg font-semibold text-gray-900">
+                                    ${blockCount === null ? 'N/A' : String(blockCount)}
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    Total events: ${totalEvents === null ? 'N/A' : String(totalEvents)}
+                                </div>
+                            </div>
+                            <div class="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                <div class="text-xs text-gray-600 mb-1">7-day trend</div>
+                                <div class="text-lg font-semibold text-gray-900">${directionLabel}</div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    ${directionHint ? `${directionHint}${slope === null ? '' : ` — slope: ${slope}`}` : 'N/A'}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async function refreshAnomalyHistorySummary(deviceId) {
+                const container = document.getElementById('anomalyHistorySummary');
+                if (!container || !deviceId) return;
+
+                try {
+                    const data = await fetchAnomalyHistorySummary(deviceId);
+                    latestAnomalyHistorySummary = data;
+                    renderAnomalyHistorySummary(container, data);
+                } catch (error) {
+                    latestAnomalyHistorySummary = null;
+                    container.innerHTML = '<div class="text-sm text-gray-500">Anomaly history summary unavailable</div>';
+                }
+            }
+
+            async function fetchAnomalyMonitor(deviceId) {
+                const url = `/api/devices/${encodeURIComponent(deviceId)}/anomaly/monitor`;
+                const res = await fetch(url, { method: 'GET' });
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                return res.json();
+            }
+
+            function normalizeMonitorAction(value) {
+                if (typeof value !== 'string') return null;
+                const v = value.trim().toUpperCase();
+                if (v === 'ALLOW' || v === 'BLOCK' || v === 'DELAY') return v;
+                return null;
+            }
+
+            function normalizeMonitorRisk(value) {
+                if (typeof value !== 'string') return null;
+                const v = value.trim().toLowerCase();
+                if (v === 'low' || v === 'medium' || v === 'high') return v;
+                if (v === 'warning') return 'medium';
+                return null;
+            }
+
+            function normalizeMonitorStatusState(value) {
+                if (typeof value !== 'string') return null;
+                const v = value.trim().toLowerCase();
+                if (v === 'normal') return 'normal';
+                if (v === 'warning' || v === 'borderline') return 'warning';
+                if (v === 'blocked' || v === 'persistently_anomalous') return 'blocked';
+                return null;
+            }
+
+            function normalizeMonitorTrendDirection(value) {
+                if (typeof value !== 'string') return null;
+                const v = value.trim().toLowerCase();
+                if (v === 'improving' || v === 'decreasing') return 'improving';
+                if (v === 'degrading' || v === 'increasing') return 'degrading';
+                if (v.startsWith('stable')) return 'stable';
+                return null;
+            }
+
+            function renderBadge(text, colorClass) {
+                return `<span class="px-3 py-1 rounded-md text-sm font-medium ${colorClass}">${text}</span>`;
+            }
+
+            function renderAnomalyMonitor(container, monitor) {
+                if (!container) return;
+                if (!monitor || typeof monitor !== 'object') {
+                    container.innerHTML = '<div class="text-sm text-gray-500">Anomaly monitor unavailable</div>';
+                    return;
+                }
+
+                const current = monitor.current && typeof monitor.current === 'object' ? monitor.current : {};
+                const action = normalizeMonitorAction(current.action);
+                const riskLevel = normalizeMonitorRisk(current.risk_level);
+                const lastAt = (() => {
+                    if (!current.last_inferred_at) return 'N/A';
+                    try {
+                        return new Date(current.last_inferred_at).toLocaleString();
+                    } catch {
+                        return 'N/A';
+                    }
+                })();
+
+                const trendRaw =
+                    typeof monitor.trend === 'string'
+                        ? monitor.trend
+                        : (monitor.trend && typeof monitor.trend === 'object' && typeof monitor.trend.direction === 'string'
+                            ? monitor.trend.direction
+                            : null);
+                const trendDirection = normalizeMonitorTrendDirection(trendRaw);
+
+                const statusRaw =
+                    typeof monitor.status === 'string'
+                        ? monitor.status
+                        : (monitor.status && typeof monitor.status === 'object' && typeof monitor.status.state === 'string'
+                            ? monitor.status.state
+                            : null);
+                const statusState = normalizeMonitorStatusState(statusRaw);
+
+                const hasData = Boolean(current.last_inferred_at);
+
+                const actionBadge = (() => {
+                    if (action === 'BLOCK') return renderBadge('BLOCK', 'bg-red-100 text-red-800');
+                    if (action === 'ALLOW') return renderBadge('ALLOW', 'bg-green-100 text-green-800');
+                    if (action === 'DELAY') return renderBadge('DELAY', 'bg-yellow-100 text-yellow-800');
+                    return renderBadge('N/A', 'bg-gray-100 text-gray-800');
+                })();
+
+                const riskBadge = (() => {
+                    if (riskLevel === 'high') return renderBadge('high', 'bg-red-100 text-red-800');
+                    if (riskLevel === 'medium') return renderBadge('medium', 'bg-yellow-100 text-yellow-800');
+                    if (riskLevel === 'low') return renderBadge('low', 'bg-green-100 text-green-800');
+                    return renderBadge('N/A', 'bg-gray-100 text-gray-800');
+                })();
+
+                const decisionExplanation = (() => {
+                    if (!action) {
+                        return 'Not enough recent anomaly data to show the current OTA decision.';
+                    }
+
+                    if (action === 'BLOCK') {
+                        const riskText = riskLevel ? riskLevel : 'unknown';
+                        return `OTA updates are currently BLOCKED because the anomaly risk is ${riskText}. This decision is made by the inference service (authoritative).`;
+                    }
+
+                    if (action === 'DELAY') {
+                        const riskText = riskLevel ? riskLevel : 'unknown';
+                        return `OTA updates are currently DELAYED because the anomaly risk is ${riskText}. This decision is made by the inference service (authoritative).`;
+                    }
+
+                    // action === 'ALLOW'
+                    if (riskLevel === 'low') {
+                        return 'OTA updates are currently ALLOWED because anomaly risk is within current policy limits.';
+                    }
+                    if (riskLevel) {
+                        return `OTA updates are currently ALLOWED, even though risk_level is ${riskLevel}. This decision is made by the inference service (authoritative).`;
+                    }
+                    return 'OTA updates are currently ALLOWED because anomaly risk is within current policy limits.';
+                })();
+
+                const statusLabelAndExplanation = (() => {
+                    if (!hasData || !statusState) {
+                        return {
+                            label: 'Insufficient stability data',
+                            explanation: 'Not enough recent anomaly data to determine stability (status).',
+                            color: 'bg-gray-100 text-gray-800',
+                        };
+                    }
+
+                    if (statusState === 'normal') {
+                        return {
+                            label: 'Stable anomaly level',
+                            explanation: 'Anomaly severity is stable and not changing significantly. This does NOT indicate that the device is safe for OTA.',
+                            color: 'bg-gray-100 text-gray-800',
+                        };
+                    }
+                    if (statusState === 'warning') {
+                        return {
+                            label: 'Unstable anomaly level',
+                            explanation: 'Anomaly behavior is fluctuating and requires attention.',
+                            color: 'bg-yellow-100 text-yellow-800',
+                        };
+                    }
+                    // blocked
+                    return {
+                        label: 'Critical anomaly state',
+                        explanation: 'Anomaly behavior is consistently severe.',
+                        color: 'bg-red-100 text-red-800',
+                    };
+                })();
+
+                const trendLabelAndExplanation = (() => {
+                    if (!hasData || !trendDirection) {
+                        return {
+                            label: 'Insufficient trend data',
+                            explanation: 'Not enough recent anomaly data to determine trend.',
+                            color: 'bg-gray-100 text-gray-800',
+                        };
+                    }
+
+                    if (trendDirection === 'improving') {
+                        return {
+                            label: 'Improving',
+                            explanation: 'Anomaly score is decreasing over time. If this trend continues, OTA may become allowed later.',
+                            color: 'bg-green-100 text-green-800',
+                        };
+                    }
+                    if (trendDirection === 'degrading') {
+                        return {
+                            label: 'Degrading',
+                            explanation: 'Anomaly score is increasing over time. Risk is getting worse.',
+                            color: 'bg-red-100 text-red-800',
+                        };
+                    }
+                    return {
+                        label: 'Stable',
+                        explanation: 'Anomaly score is not changing significantly over time.',
+                        color: 'bg-gray-100 text-gray-800',
+                    };
+                })();
+
+                const extraCaseNotes = (() => {
+                    const notes = [];
+
+                    // CASE 1: BLOCK + high + normal + stable
+                    if (action === 'BLOCK' && riskLevel === 'high' && statusState === 'normal' && trendDirection === 'stable') {
+                        notes.push('Risk remains high even though the anomaly is stable.');
+                    }
+
+                    // CASE 2: BLOCK + improving
+                    if (action === 'BLOCK' && trendDirection === 'improving') {
+                        notes.push('Risk is still above threshold, but improving trend is a positive signal.');
+                    }
+
+                    // CASE 3: ALLOW + degrading
+                    if (action === 'ALLOW' && trendDirection === 'degrading') {
+                        notes.push('OTA is allowed now, but anomaly behavior is worsening and should be monitored.');
+                    }
+
+                    return notes;
+                })();
+
+                const summary24h = (() => {
+                    const s = latestAnomalyHistorySummary?.summary?.last_24h;
+                    if (!s || typeof s !== 'object') return null;
+                    const blockCount = typeof s.block_count === 'number' ? s.block_count : null;
+                    const total = typeof s.total_events === 'number' ? s.total_events : null;
+                    if (blockCount === null && total === null) return null;
+                    return `BLOCK actions in last 24h: ${blockCount === null ? 'N/A' : blockCount}${total === null ? '' : ` (out of ${total} events)`}`;
+                })();
+
+                container.innerHTML = `
+                    <div class="space-y-4">
+                        <div>
+                            <div class="text-sm font-semibold text-gray-900 mb-2">Current OTA Decision</div>
+                            <div class="flex flex-wrap items-center gap-2 mb-2">
+                                ${actionBadge}
+                                <span class="text-sm text-gray-600">Risk level:</span>
+                                ${riskBadge}
+                                <span class="text-sm text-gray-600">Last evaluated:</span>
+                                <span class="text-sm text-gray-900 font-medium">${lastAt}</span>
+                            </div>
+                            <div class="text-sm text-gray-700">${decisionExplanation}</div>
+                            ${extraCaseNotes.length ? `
+                                <div class="mt-2 text-sm text-gray-700 space-y-1">
+                                    ${extraCaseNotes.map((n) => `<div>• ${n}</div>`).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+
+                        <div class="pt-4 border-t border-gray-200">
+                            <div class="text-sm font-semibold text-gray-900 mb-2">Anomaly Stability (Status)</div>
+                            <div class="flex items-center gap-2 mb-2">
+                                ${renderBadge(statusLabelAndExplanation.label, statusLabelAndExplanation.color)}
+                            </div>
+                            <div class="text-sm text-gray-700">${statusLabelAndExplanation.explanation}</div>
+                            <div class="text-xs text-gray-500 mt-2">Status describes stability over time, not OTA safety.</div>
+                        </div>
+
+                        <div class="pt-4 border-t border-gray-200">
+                            <div class="text-sm font-semibold text-gray-900 mb-2">Trend (over time)</div>
+                            <div class="flex items-center gap-2 mb-2">
+                                ${renderBadge(trendLabelAndExplanation.label, trendLabelAndExplanation.color)}
+                            </div>
+                            <div class="text-sm text-gray-700">${trendLabelAndExplanation.explanation}</div>
+                            <div class="text-xs text-gray-500 mt-2">Trend does NOT override the current OTA decision.</div>
+                        </div>
+
+                        <div class="pt-4 border-t border-gray-200">
+                            <div class="text-sm font-semibold text-gray-900 mb-2">Summary Insight</div>
+                            <div class="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700 space-y-1">
+                                <div>How to read this monitor:</div>
+                                <div>• OTA decision is based on RISK and ACTION only</div>
+                                <div>• Status and Trend describe behavior over time</div>
+                                <div>• A device can be stable or improving and still unsafe</div>
+                                <div>• Only the inference service decides whether OTA is allowed</div>
+                                ${summary24h ? `<div class="pt-2 text-xs text-gray-600">${summary24h}</div>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async function refreshAnomalyMonitor(deviceId) {
+                const container = document.getElementById('anomalyMonitor');
+                if (!container || !deviceId) return;
+
+                try {
+                    const data = await fetchAnomalyMonitor(deviceId);
+                    renderAnomalyMonitor(container, data);
+                } catch (error) {
+                    container.innerHTML = '<div class="text-sm text-gray-500">Anomaly monitor unavailable</div>';
+                }
+            }
+
+            function startAnomalyMonitorPolling(deviceId) {
+                if (!deviceId) return;
+                if (currentMonitoredDeviceId === deviceId) return;
+                if (anomalyMonitorInterval) {
+                    clearInterval(anomalyMonitorInterval);
+                    anomalyMonitorInterval = null;
+                }
+                currentMonitoredDeviceId = deviceId;
+
+                refreshAnomalyMonitor(deviceId);
+                refreshAnomalyHistorySummary(deviceId);
+                anomalyMonitorInterval = setInterval(() => {
+                    refreshAnomalyMonitor(deviceId);
+                    refreshAnomalyHistorySummary(deviceId);
+                }, 30000);
+            }
+
+            function stopAnomalyMonitorPolling() {
+                if (anomalyMonitorInterval) {
+                    clearInterval(anomalyMonitorInterval);
+                    anomalyMonitorInterval = null;
+                }
+                currentMonitoredDeviceId = null;
+            }
+
+            window.addEventListener('beforeunload', () => {
+                // Anomaly Monitor (read-only)
+                stopAnomalyMonitorPolling();
+            });
 
         async function loadTabData(tab) {
             if (tab === 'info') {
