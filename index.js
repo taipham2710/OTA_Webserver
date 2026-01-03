@@ -14,6 +14,7 @@ import healthRoutes from './src/routes/healthRoutes.js';
 import inferenceRoutes from './src/routes/inferenceRoutes.js';
 import uiRoutes from './src/routes/uiRoutes.js';
 import internalModelRoutes from './src/routes/internalModelRoutes.js';
+import internalDevicesRoutes from './src/routes/internalDevicesRoutes.js';
 import { setServerReady } from './src/controllers/healthController.js';
 import { ensureBucketExists } from './src/clients/minio.js';
 import { getMongoClient } from './src/clients/mongodb.js';
@@ -50,6 +51,7 @@ app.use('/api/model', modelRoutes);
 app.use('/api/inference', inferenceRoutes);
 app.use('/api/ui', uiRoutes);
 app.use('/api/internal/model', internalModelRoutes);
+app.use('/api/internal/devices', internalDevicesRoutes);
 app.use('/health', healthRoutes);
 
 app.use(errorHandler);
