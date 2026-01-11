@@ -13,6 +13,12 @@ export const ingestMetrics = async (metricsData) => {
       throw new AppError('metrics object is required', 400);
     }
 
+    // ML input contract: device-provided timestamp is mandatory for ML-safe windowing & time_gap_* features.
+    // This endpoint is not a device self-registration endpoint and must fail fast on contract violations.
+    if (!metricsData.timestamp) {
+      throw new AppError('ML_CONTRACT_VIOLATION: metricsData.timestamp is required', 400);
+    }
+
     const metrics = metricsData.metrics;
     const metricKeys = Object.keys(metrics);
 
@@ -27,9 +33,7 @@ export const ingestMetrics = async (metricsData) => {
       }
     }
 
-    const timestamp = metricsData.timestamp
-      ? new Date(metricsData.timestamp)
-      : new Date();
+    const timestamp = new Date(metricsData.timestamp);
 
     if (isNaN(timestamp.getTime())) {
       throw new AppError('Invalid timestamp format', 400);
@@ -38,6 +42,8 @@ export const ingestMetrics = async (metricsData) => {
     const writeApi = getWriteApi();
     const point = new Point('device_metrics')
       .tag('deviceId', metricsData.deviceId)
+      // Used by the ML feature aggregation layer to enforce timestamp provenance.
+      .booleanField('timestamp_provided', true)
       .timestamp(timestamp);
 
     for (const [key, value] of Object.entries(metrics)) {

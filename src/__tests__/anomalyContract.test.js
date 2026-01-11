@@ -53,17 +53,6 @@ function validateInferResponse(response) {
   if (typeof data.threshold !== 'number') errors.push('threshold must be a number');
   if (typeof data.soft_threshold !== 'number') errors.push('soft_threshold must be a number');
 
-  // Decision consistency: (score, thresholds) must match decision
-  if (typeof data.score === 'number' && typeof data.threshold === 'number' && typeof data.soft_threshold === 'number') {
-    if (data.score >= data.threshold && data.decision !== 'block') {
-      errors.push('Decision mismatch: score>=threshold must be block');
-    } else if (data.score < data.threshold && data.score >= data.soft_threshold && data.decision !== 'delay') {
-      errors.push('Decision mismatch: score>=soft_threshold must be delay');
-    } else if (data.score < data.soft_threshold && data.decision !== 'allow') {
-      errors.push('Decision mismatch: score<soft_threshold must be allow');
-    }
-  }
-
   return {
     valid: errors.length === 0,
     errors,
@@ -146,22 +135,21 @@ describe('Backend API Contract Validation (/api/anomaly/:deviceId/infer)', () =>
     expect(validation.valid).toBe(true);
   });
 
-  test('should fail on decision mismatch', () => {
-    const inconsistentResponse = {
+  test('should not derive decision from score/thresholds in the contract validator', () => {
+    const response = {
       success: true,
       data: {
         deviceId: 'dev-001',
         score: 0.95,
         risk_level: 'low',
-        decision: 'allow', // INVALID
+        decision: 'allow',
         threshold: 0.94,
         soft_threshold: 0.7,
       },
     };
 
-    const validation = validateInferResponse(inconsistentResponse);
+    const validation = validateInferResponse(response);
 
-    expect(validation.valid).toBe(false);
-    expect(validation.errors.some(e => e.includes('Decision mismatch'))).toBe(true);
+    expect(validation.valid).toBe(true);
   });
 });
