@@ -1,8 +1,12 @@
 import { validateDeviceId } from '../utils/validators.js';
 import { getDb } from '../clients/mongodb.js';
 import { AppError } from '../utils/errors.js';
-import { buildFeatureVector } from '../services/featureAggregationService.js';
+import { buildFeatureVectorCountBased } from '../services/featureAggregationService.js';
 import { inferenceProxy } from '../services/inferenceProxyService.js';
+import { otaPolicyDecision } from '../policy/policyEngine.js';
+
+const isMlContractViolation = (error) =>
+  Boolean(error && typeof error.message === 'string' && error.message.startsWith('ML_CONTRACT_VIOLATION'));
 
 // ARCHITECTURE: Read-only endpoint - returns current anomaly state from devices collection
 // NO ML inference, NO database writes
@@ -39,7 +43,36 @@ export const getAnomalyAnalysisHandler = async (req, res, next) => {
     const deviceId = validateDeviceId(req.params.device_id);
 
     // Manual analysis is read-only: no DB writes, no anomaly history writes.
-    const featureVector = await buildFeatureVector(deviceId);
+    let featureVector;
+    try {
+      featureVector = await buildFeatureVectorCountBased(deviceId);
+    } catch (error) {
+      if (isMlContractViolation(error)) {
+        res.status(400).json({
+          success: false,
+          errorCode: 'ML_CONTRACT_VIOLATION',
+          message: error.message,
+          statusCode: 400,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    const nonZeroFeatureCount = Object.entries(featureVector)
+      .filter(([k]) => !k.endsWith('_present'))
+      .filter(([, v]) => Number.isFinite(v) && v !== 0)
+      .length;
+    if (nonZeroFeatureCount < 5) {
+      console.warn('[ML_ASSERT] Too few non-zero features for inference', { deviceId, nonZeroFeatureCount });
+    }
+    const allPresentZero = Object.entries(featureVector)
+      .filter(([k]) => k.endsWith('_present'))
+      .every(([, v]) => v === 0);
+    if (allPresentZero) {
+      console.error('[ML_ASSERT] All *_present flags are 0 → invalid feature vector', { deviceId });
+    }
+
     const upstream = await inferenceProxy.predict({ data: featureVector });
     if (!upstream || upstream.status !== 200 || !upstream.data || typeof upstream.data !== 'object') {
       throw new AppError('Inference service unavailable', 503);
@@ -74,8 +107,53 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       throw new AppError('Device not found', 404);
     }
 
-    // 1) Aggregate features (existing logic)
-    const featureVector = await buildFeatureVector(deviceId);
+    // 1) Aggregate features (ML training contract: count-based window, ordered feature list)
+    let featureVector;
+    try {
+      featureVector = await buildFeatureVectorCountBased(deviceId);
+    } catch (error) {
+      if (isMlContractViolation(error)) {
+        // HARD FAIL on contract violation: do not update device state, do not insert events.
+        res.status(400).json({
+          success: false,
+          errorCode: 'ML_CONTRACT_VIOLATION',
+          message: error.message,
+          statusCode: 400,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    // DEBUG (guarded): verify vector contract without logging full payload.
+    if (String(process.env.DEBUG_ML || '') === '1') {
+      const entries = Object.entries(featureVector);
+      const featureCount = entries.length;
+      const nonZeroCount = entries
+        .filter(([k]) => !k.endsWith('_present'))
+        .filter(([, v]) => typeof v === 'number' && Number.isFinite(v) && v !== 0)
+        .length;
+      const timeGapAvg = typeof featureVector.time_gap_avg === 'number' ? featureVector.time_gap_avg : null;
+      const timeGapStd = typeof featureVector.time_gap_std === 'number' ? featureVector.time_gap_std : null;
+      const sample = entries.slice(0, 10);
+      console.log(
+        `[ML_VECTOR_DEBUG] deviceId=${deviceId} featureCount=${featureCount} nonZeroCount=${nonZeroCount} time_gap_avg=${timeGapAvg} time_gap_std=${timeGapStd} sample=${JSON.stringify(sample)}`,
+      );
+    }
+
+    const nonZeroFeatureCount = Object.entries(featureVector)
+      .filter(([k]) => !k.endsWith('_present'))
+      .filter(([, v]) => Number.isFinite(v) && v !== 0)
+      .length;
+    if (nonZeroFeatureCount < 5) {
+      console.warn('[ML_ASSERT] Too few non-zero features for inference', { deviceId, nonZeroFeatureCount });
+    }
+    const allPresentZero = Object.entries(featureVector)
+      .filter(([k]) => k.endsWith('_present'))
+      .every(([, v]) => v === 0);
+    if (allPresentZero) {
+      console.error('[ML_ASSERT] All *_present flags are 0 → invalid feature vector', { deviceId });
+    }
 
     // 2) Call inference service (authoritative)
     const upstream = await inferenceProxy.predict({ data: featureVector });
@@ -98,20 +176,19 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       throw new AppError('Invalid inference response', 502);
     }
 
-    // 3) Apply decision logic (strict 2-threshold policy)
-    let decision;
-    if (score >= threshold) {
-      decision = 'block';
-    } else if (score >= softThreshold) {
-      decision = 'delay';
-    } else {
-      decision = 'allow';
+    // 3) Validate risk_level format
+    if (typeof risk_level !== 'string' || !['low', 'medium', 'high'].includes(risk_level)) {
+      throw new AppError('Invalid inference response', 502);
     }
+
+    // 4) Delegate OTA decision to policy engine (separation of concerns)
+    const policyResult = otaPolicyDecision(risk_level);
+    const decision = policyResult.decision;
 
     const now = new Date();
     const anomalyState = {
       score,
-      risk_level: typeof risk_level === 'string' ? risk_level : null,
+      risk_level,
       decision,
       threshold,
       soft_threshold: softThreshold,
