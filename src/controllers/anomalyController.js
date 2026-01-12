@@ -162,10 +162,11 @@ export const postAnomalyInferHandler = async (req, res, next) => {
     }
 
     // NEW inference contract (authoritative):
-    // { anomaly_score, risk_level, threshold, soft_threshold, ... }
+    // { anomaly_score, risk_level, thresholds: { soft, hard }, ... }
     const score = upstream.data.anomaly_score;
-    const threshold = upstream.data.threshold;
-    const softThreshold = upstream.data.soft_threshold;
+    const thresholds = upstream.data.thresholds;
+    const threshold = thresholds?.hard;
+    const softThreshold = thresholds?.soft;
     const risk_level = upstream.data.risk_level;
 
     if (
