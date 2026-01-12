@@ -1,4 +1,5 @@
 import { getElasticsearchClient } from '../clients/elasticsearch.js';
+import { getDb } from '../clients/mongodb.js';
 import { AppError } from '../utils/errors.js';
 
 // Name of the Elasticsearch logs data stream (must be pre-created in ES)
@@ -39,6 +40,48 @@ export const ingestLog = async (logData) => {
       index: LOGS_DATA_STREAM,
       document: doc,
     });
+
+    // Backfill device metadata from heartbeat logs (non-blocking)
+    if (logData.message === 'heartbeat' || String(logData.message || '').toLowerCase() === 'heartbeat') {
+      try {
+        const db = await getDb();
+        const devicesCollection = db.collection('devices');
+        
+        // Check if device exists and what metadata is missing
+        const device = await devicesCollection.findOne({ deviceId: logData.deviceId });
+        if (!device) {
+          // Device doesn't exist, skip metadata backfill
+        } else {
+          const updateFields = {};
+          
+          // Only set deviceType if missing or null
+          if (logData.deviceType && typeof logData.deviceType === 'string' && (!device.deviceType || device.deviceType === null)) {
+            updateFields.deviceType = logData.deviceType;
+          }
+          
+          // Only set firmware.currentVersion if missing or null
+          if (logData.firmwareVersion && typeof logData.firmwareVersion === 'string' && (!device.firmware?.currentVersion || device.firmware.currentVersion === null)) {
+            updateFields['firmware.currentVersion'] = logData.firmwareVersion;
+          }
+          
+          // Only set firmware.reportedFirmwareVersion if missing or null
+          if (logData.reportedFw && typeof logData.reportedFw === 'string' && (!device.firmware?.reportedFirmwareVersion || device.firmware.reportedFirmwareVersion === null)) {
+            updateFields['firmware.reportedFirmwareVersion'] = logData.reportedFw;
+          }
+          
+          // Update only if there are fields to update
+          if (Object.keys(updateFields).length > 0) {
+            await devicesCollection.updateOne(
+              { deviceId: logData.deviceId },
+              { $set: updateFields }
+            );
+          }
+        }
+      } catch (error) {
+        // Non-blocking: log error but don't fail log ingestion
+        console.warn(`Failed to backfill device metadata for ${logData.deviceId}: ${error.message}`);
+      }
+    }
 
     return {
       id: response._id,
