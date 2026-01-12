@@ -19,7 +19,7 @@ export const getDeviceStatistics = async () => {
       const risk = device?.anomaly?.risk_level || null;
       if (risk === 'high') {
         anomalyCount++;
-      } else if (risk === 'warning') {
+      } else if (risk === 'medium') {
         warningCount++;
       } else {
         normalCount++;

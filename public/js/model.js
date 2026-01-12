@@ -27,23 +27,48 @@ const safeFormatDate = (value) => {
 };
 
 const extractThresholdStrategy = (model) => {
-  const strategy = model?.threshold?.strategy;
-  if (!isPlainObject(strategy)) {
+  const threshold = model?.threshold;
+  if (!isPlainObject(threshold)) {
     return {
       type: null,
       soft_quantile: null,
       hard_quantile: null,
       soft_threshold: null,
-      threshold: null,
+      hard_threshold: null,
+    };
+  }
+
+  // New format: threshold.strategy is a string, threshold.soft/hard are numbers
+  // Old format: threshold.strategy is an object with type, soft_quantile, etc.
+  const strategy = threshold.strategy;
+  const isNewFormat = typeof strategy === 'string';
+  
+  if (isNewFormat) {
+    // New format: threshold = { strategy: "quantile_based", soft: <num>, hard: <num> }
+    return {
+      type: strategy,
+      soft_quantile: null, // Not available in new format
+      hard_quantile: null, // Not available in new format
+      soft_threshold: isFiniteNumber(threshold.soft) ? threshold.soft : null,
+      hard_threshold: isFiniteNumber(threshold.hard) ? threshold.hard : null,
+    };
+  } else if (isPlainObject(strategy)) {
+    // Old format: threshold.strategy = { type, soft_quantile, hard_quantile, soft_threshold, threshold }
+    return {
+      type: typeof strategy.type === 'string' ? strategy.type : null,
+      soft_quantile: isFiniteNumber(strategy.soft_quantile) ? strategy.soft_quantile : null,
+      hard_quantile: isFiniteNumber(strategy.hard_quantile) ? strategy.hard_quantile : null,
+      soft_threshold: isFiniteNumber(strategy.soft_threshold) ? strategy.soft_threshold : null,
+      hard_threshold: isFiniteNumber(strategy.threshold) ? strategy.threshold : null,
     };
   }
 
   return {
-    type: typeof strategy.type === 'string' ? strategy.type : null,
-    soft_quantile: isFiniteNumber(strategy.soft_quantile) ? strategy.soft_quantile : null,
-    hard_quantile: isFiniteNumber(strategy.hard_quantile) ? strategy.hard_quantile : null,
-    soft_threshold: isFiniteNumber(strategy.soft_threshold) ? strategy.soft_threshold : null,
-    threshold: isFiniteNumber(strategy.threshold) ? strategy.threshold : null,
+    type: null,
+    soft_quantile: null,
+    hard_quantile: null,
+    soft_threshold: null,
+    hard_threshold: null,
   };
 };
 
@@ -68,6 +93,28 @@ export const modelUI = {
       }
 
       const model = response.data || {};
+      
+      // Try to load feature_list.json if not in response
+      // NEW format: feature_list may be included in metadata or fetched separately
+      // OLD format: feature_list not available
+      if (!Array.isArray(model.feature_list) && model.model_version) {
+        // Attempt to fetch feature_list.json (non-blocking, optional)
+        // Note: This requires backend to expose feature_list.json endpoint
+        // For now, feature_list will be null and UI will show note
+        try {
+          // Try fetching from model artifacts if endpoint exists
+          const featureListResponse = await fetch(`/api/model/artifacts/feature_list?version=${encodeURIComponent(model.model_version)}`);
+          if (featureListResponse.ok) {
+            const featureListData = await featureListResponse.json();
+            if (featureListData.success && Array.isArray(featureListData.data)) {
+              model.feature_list = featureListData.data;
+            }
+          }
+        } catch (err) {
+          // Silently fail - feature_list is optional, UI will show note
+        }
+      }
+      
       this.render(model);
     } catch (error) {
       this.renderError(error.message || 'Failed to fetch model metadata');
@@ -81,8 +128,11 @@ export const modelUI = {
     const modelType = typeof model.model_type === 'string' ? model.model_type : null;
     const trainedAt = model.trained_at ?? null;
     const featureCount = isFiniteNumber(model.feature_count) ? model.feature_count : null;
+    const scalerUsed = model.scaler_used === true ? 'Yes' : (model.scaler_used === false ? 'No' : null);
+    const scalerType = typeof model.scaler_type === 'string' ? model.scaler_type : null;
 
     const trainingRows = isFiniteNumber(model.training_rows) ? model.training_rows : null;
+    const datasetSource = typeof model.dataset_source === 'string' ? model.dataset_source : null;
     const normalDefinition = isPlainObject(model?.filtering?.normal_definition)
       ? model.filtering.normal_definition
       : null;
@@ -102,6 +152,7 @@ export const modelUI = {
 
     const percentiles = isPlainObject(model?.score_percentiles) ? model.score_percentiles : null;
     const statistics = isPlainObject(model?.score_statistics) ? model.score_statistics : null;
+    const featureList = Array.isArray(model?.feature_list) ? model.feature_list : null;
 
     const modelCard = document.getElementById('modelCard');
     if (!modelCard) return;
@@ -127,36 +178,65 @@ export const modelUI = {
           ${this.renderField('Model Type', modelType)}
           ${this.renderField('Trained At', safeFormatDate(trainedAt))}
           ${this.renderField('Feature Count', isFiniteNumber(featureCount) ? String(featureCount) : null)}
+          ${scalerUsed ? this.renderField('Scaler Used', scalerUsed) : ''}
+          ${scalerType ? this.renderField('Scaler Type', scalerType) : ''}
         </div>
 
         <div class="mt-6 pt-6 border-t border-gray-200">
           <h3 class="text-lg font-semibold mb-3 text-gray-900">Training Definition</h3>
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
             ${this.renderField('Training Rows', isFiniteNumber(trainingRows) ? String(trainingRows) : null)}
+            ${this.renderField('Dataset Source', datasetSource)}
           </div>
+          ${normalDefinition ? `
           <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
             <div class="text-sm font-semibold text-gray-900 mb-2">Normal Window Definition</div>
             ${this.renderRulesTable(normalDefinition)}
           </div>
+          ` : datasetSource ? `
+          <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <div class="text-sm font-semibold text-gray-900 mb-2">Training Method</div>
+            <div class="text-sm text-gray-700">Dataset-based training: Normal samples (is_anomaly == 0)</div>
+          </div>
+          ` : ''}
         </div>
 
         <div class="mt-6 pt-6 border-t border-gray-200">
           <h3 class="text-lg font-semibold mb-3 text-gray-900">Threshold Strategy</h3>
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             ${this.renderField('Strategy Type', thresholdStrategy.type)}
-            ${this.renderField('Soft Quantile', formatNumber(thresholdStrategy.soft_quantile, 6))}
-            ${this.renderField('Hard Quantile', formatNumber(thresholdStrategy.hard_quantile, 6))}
-            ${this.renderField('Soft Threshold', formatNumber(thresholdStrategy.soft_threshold, 10))}
-            ${this.renderField('Threshold', formatNumber(thresholdStrategy.threshold, 10))}
+            ${thresholdStrategy.soft_quantile !== null ? this.renderField('Soft Quantile', formatNumber(thresholdStrategy.soft_quantile, 6)) : ''}
+            ${thresholdStrategy.hard_quantile !== null ? this.renderField('Hard Quantile', formatNumber(thresholdStrategy.hard_quantile, 6)) : ''}
+            ${thresholdStrategy.soft_threshold !== null ? this.renderField('Soft Threshold', formatNumber(thresholdStrategy.soft_threshold, 10)) : ''}
+            ${thresholdStrategy.hard_threshold !== null ? this.renderField('Hard Threshold', formatNumber(thresholdStrategy.hard_threshold, 10)) : ''}
           </div>
         </div>
 
         <div class="mt-6 pt-6 border-t border-gray-200">
           <h3 class="text-lg font-semibold mb-3 text-gray-900">Anomaly Score Semantics</h3>
           <div class="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700 space-y-2">
-            <div><b>anomaly_score is probability:</b> ${anomalyScoreProbabilityText ?? 'N/A'}</div>
-            <div><b>anomaly_score definition:</b> ${anomalyScoreDefinition ?? 'N/A'}</div>
-            <div><b>higher score means:</b> ${higherScoreMeans ?? 'N/A'}</div>
+            ${(() => {
+              // NEW format (isolation_forest): Always show default semantics if no explicit metadata
+              // OLD format: Use metadata if available, otherwise show defaults
+              const isIsolationForest = algorithm === 'isolation_forest';
+              const hasExplicitSemantics = anomalyScoreProbabilityText !== null || anomalyScoreDefinition || higherScoreMeans;
+              
+              if (hasExplicitSemantics) {
+                // Use metadata-provided semantics
+                return `
+                  ${anomalyScoreProbabilityText !== null ? `<div><b>anomaly_score is probability:</b> ${anomalyScoreProbabilityText}</div>` : ''}
+                  ${anomalyScoreDefinition ? `<div><b>anomaly_score definition:</b> ${anomalyScoreDefinition}</div>` : ''}
+                  ${higherScoreMeans ? `<div><b>higher score means:</b> ${higherScoreMeans}</div>` : ''}
+                `;
+              } else {
+                // Default semantics for isolation_forest (never show N/A)
+                return `
+                  <div class="text-gray-600 italic">anomaly_score is NOT a probability</div>
+                  <div><b>anomaly_score definition:</b> anomaly_score = -decision_function(X)</div>
+                  <div><b>higher score means:</b> Higher score means more abnormal (early warning signal)</div>
+                `;
+              }
+            })()}
           </div>
         </div>
 
@@ -164,16 +244,51 @@ export const modelUI = {
           <h3 class="text-lg font-semibold mb-3 text-gray-900">Score Distribution</h3>
           <div class="text-xs text-gray-500 mb-2">Statistics computed from training (normal) score distribution only</div>
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
-            ${this.renderField('p90', formatNumber(percentiles?.p90, 10))}
-            ${this.renderField('p95', formatNumber(percentiles?.p95, 10))}
-            ${this.renderField('p99', formatNumber(percentiles?.p99, 10))}
+            ${(() => {
+              // NEW format: Prefer p98/p99, fallback to p90/p95 only if p98/p99 don't exist
+              const hasNewFormat = percentiles?.p98 !== undefined || percentiles?.p99 !== undefined;
+              if (hasNewFormat) {
+                return `
+                  ${percentiles?.p98 !== undefined ? this.renderField('p98', formatNumber(percentiles.p98, 10)) : ''}
+                  ${percentiles?.p99 !== undefined ? this.renderField('p99', formatNumber(percentiles.p99, 10)) : ''}
+                `;
+              } else {
+                // OLD format: Show p90/p95
+                return `
+                  ${percentiles?.p90 !== undefined ? this.renderField('p90', formatNumber(percentiles.p90, 10)) : ''}
+                  ${percentiles?.p95 !== undefined ? this.renderField('p95', formatNumber(percentiles.p95, 10)) : ''}
+                `;
+              }
+            })()}
           </div>
+          ${statistics && (statistics.min !== undefined || statistics.max !== undefined || statistics.mean !== undefined || statistics.std !== undefined) ? `
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            ${this.renderField('min', formatNumber(statistics?.min, 10))}
-            ${this.renderField('max', formatNumber(statistics?.max, 10))}
-            ${this.renderField('mean', formatNumber(statistics?.mean, 10))}
-            ${this.renderField('std', formatNumber(statistics?.std, 10))}
+            ${statistics.min !== undefined ? this.renderField('min', formatNumber(statistics.min, 10)) : ''}
+            ${statistics.max !== undefined ? this.renderField('max', formatNumber(statistics.max, 10)) : ''}
+            ${statistics.mean !== undefined ? this.renderField('mean', formatNumber(statistics.mean, 10)) : ''}
+            ${statistics.std !== undefined ? this.renderField('std', formatNumber(statistics.std, 10)) : ''}
           </div>
+          ` : ''}
+        </div>
+
+        <div class="mt-6 pt-6 border-t border-gray-200">
+          <h3 class="text-lg font-semibold mb-3 text-gray-900">Feature Information</h3>
+          <div class="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
+            <div class="text-sm font-semibold text-gray-900 mb-2">Feature Count</div>
+            <div class="text-sm text-gray-700">${isFiniteNumber(featureCount) ? `${featureCount} features` : 'N/A'}</div>
+          </div>
+          ${featureList && featureList.length > 0 ? `
+          <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <div class="text-sm font-semibold text-gray-900 mb-3">Feature List (${featureList.length})</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs font-mono text-gray-700">
+              ${featureList.map(feature => `<div class="px-2 py-1 bg-white rounded border border-gray-200">${feature}</div>`).join('')}
+            </div>
+          </div>
+          ` : isFiniteNumber(featureCount) ? `
+          <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <div class="text-xs text-gray-500">Feature list available in feature_list.json (not loaded in response)</div>
+          </div>
+          ` : ''}
         </div>
       </div>
     `;

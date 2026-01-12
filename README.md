@@ -87,6 +87,45 @@ The server will start on `http://localhost:3000`
 ### Health Check
 - `GET /health` - Check service health status
 
+## ML Input Contract (Isolation Forest)
+
+The anomaly model is trained and served using a strict input contract to ensure reproducible, correct inference behavior.
+
+### Requirements
+
+- `POST /api/metrics` MUST include `metricsData.timestamp` (device-provided timestamp).
+  - Missing timestamp → request is rejected with `ML_CONTRACT_VIOLATION`.
+- ML inference uses COUNT-BASED windowing per device:
+  - Window size: 10 events
+  - Sorted by event timestamp (ascending)
+  - If fewer than 10 events exist, inference uses all available events
+- Feature schema is fixed:
+  - 77 base features + 77 `<feature>_present` masks (154 total)
+  - Strict, interleaved order: `[f1, f1_present, f2, f2_present, ...]`
+- Debug mode:
+  - Set `DEBUG_ML=1` to log feature counts and a small ordered sample of the feature vector.
+
+### Why this is required
+
+The training pipeline computes time-gap and temporal features from device timestamps. Using server arrival time or time-based windows silently shifts feature distributions and invalidates evaluation.
+
+## ML Contract Verification Results
+
+Test suite: `src/__tests__/mlContractVerification.test.js`
+
+- **Timestamp enforcement**
+  - Expected: ingest without `metricsData.timestamp` is rejected (`ML_CONTRACT_VIOLATION`) and no Influx write occurs.
+  - Actual: verified by test (`POST /api/metrics` handler + `errorHandler`), `writePoint`/`flush` are not called.
+- **Count-based windowing**
+  - Expected: 7 events → one window (size 7); 12 events → last 10 used; sorted by timestamp ASC.
+  - Actual: verified by unit tests against the ML builder.
+- **Feature vector integrity**
+  - Expected: 154 keys, strict interleaved order from `feature_list.json`, `_present` is presence-based (0 is still present).
+  - Actual: verified by unit tests.
+- **Negative case**
+  - Expected: missing `timestamp_provided` provenance triggers `ML_CONTRACT_VIOLATION` and inference is blocked.
+  - Actual: verified by unit tests.
+
 ### Firmware
 - `POST /api/firmware/upload` - Upload firmware file to MinIO
   - Body: `multipart/form-data` with `firmware` file

@@ -4,6 +4,7 @@ import { AppError } from '../utils/errors.js';
 import { buildFeatureVectorCountBased } from '../services/featureAggregationService.js';
 import { inferenceProxy } from '../services/inferenceProxyService.js';
 import { otaPolicyDecision } from '../policy/policyEngine.js';
+import { computeFeatureDeviations } from '../services/featureDeviationService.js';
 
 const isMlContractViolation = (error) =>
   Boolean(error && typeof error.message === 'string' && error.message.startsWith('ML_CONTRACT_VIOLATION'));
@@ -162,12 +163,13 @@ export const postAnomalyInferHandler = async (req, res, next) => {
     }
 
     // NEW inference contract (authoritative):
-    // { anomaly_score, risk_level, thresholds: { soft, hard }, ... }
+    // { anomaly_score, risk_level, thresholds: { soft, hard }, model_version, ... }
     const score = upstream.data.anomaly_score;
     const thresholds = upstream.data.thresholds;
     const threshold = thresholds?.hard;
     const softThreshold = thresholds?.soft;
     const risk_level = upstream.data.risk_level;
+    const model_version = upstream.data.model_version;
 
     if (
       typeof score !== 'number' ||
@@ -180,6 +182,15 @@ export const postAnomalyInferHandler = async (req, res, next) => {
     // 3) Validate risk_level format
     if (typeof risk_level !== 'string' || !['low', 'medium', 'high'].includes(risk_level)) {
       throw new AppError('Invalid inference response', 502);
+    }
+
+    // 3.5) Compute feature deviations (non-blocking)
+    let deviationsResult = { deviations: [] };
+    try {
+      deviationsResult = await computeFeatureDeviations(featureVector, 10);
+    } catch (deviationError) {
+      // Non-blocking: log but don't fail inference
+      console.warn(`[AnomalyController] Failed to compute feature deviations: ${deviationError.message}`);
     }
 
     // 4) Delegate OTA decision to policy engine (separation of concerns)
@@ -227,6 +238,8 @@ export const postAnomalyInferHandler = async (req, res, next) => {
         decision,
         threshold,
         soft_threshold: softThreshold,
+        model_version: model_version || null,
+        deviations: deviationsResult.deviations || [],
 
         // Backward-compatible aliases for existing UI (read-only display)
         action: decision.toUpperCase(),
