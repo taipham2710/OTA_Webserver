@@ -426,6 +426,8 @@
                                         const risk = anomaly?.risk_level || null;
                                         if (risk === 'high') {
                                             return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-800">High</span>`;
+                                        } else if (risk === 'medium') {
+                                            return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">Medium</span>`;
                                         } else if (risk === 'warning') {
                                             return `<span class="px-2 py-1 rounded-md text-xs font-medium bg-yellow-100 text-yellow-800">Warning</span>`;
                                         } else if (risk === 'low') {
@@ -545,6 +547,8 @@
 	                                    const risk = anomaly?.risk_level || null;
 	                                    if (risk === 'high') {
 	                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-red-100 text-red-800">High</span>`;
+	                                    } else if (risk === 'medium') {
+	                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-yellow-100 text-yellow-800">Medium</span>`;
 	                                    } else if (risk === 'warning') {
 	                                        return `<span class="px-3 py-1 rounded-md text-sm font-medium bg-yellow-100 text-yellow-800">Warning</span>`;
 	                                    } else if (risk === 'low') {
