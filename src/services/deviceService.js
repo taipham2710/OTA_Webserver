@@ -1,4 +1,5 @@
 import { getDb } from '../clients/mongodb.js';
+import { computeRollingOtaDecision } from './anomalySummaryService.js';
 import { getElasticsearchClient } from '../clients/elasticsearch.js';
 import { getQueryApi } from '../clients/influxdb.js';
 import { config } from '../config/index.js';
@@ -372,20 +373,21 @@ export const assignFirmwareToDevice = async (deviceId, firmwareVersion) => {
     }
 
     // ========================================================================
-    // OTA DECISION ENFORCEMENT
+    // OTA DECISION ENFORCEMENT (ROLLING RISK WINDOW)
     // ========================================================================
-    // Anomaly decision must be centralized in /api/anomaly/:deviceId/infer.
-    // OTA enforcement reads current anomaly decision ONLY from devices.anomaly.
-    let otaDecision = { action: 'delay' }; // Fail-closed if device has no anomaly state yet
-    const currentAnomaly = device.anomaly ?? null;
-    const policyDecision = currentAnomaly?.decision ?? currentAnomaly?.action ?? null;
-    if (policyDecision === 'allow' || policyDecision === 'ALLOW') {
-      otaDecision = { action: 'allow' };
-    } else if (policyDecision === 'delay' || policyDecision === 'DELAY') {
-      otaDecision = { action: 'delay' };
-    } else if (policyDecision === 'block' || policyDecision === 'BLOCK') {
-      otaDecision = { action: 'block' };
-    }
+    // OTA enforcement is based on recent anomaly_events history, not devices.anomaly.
+    const now = new Date();
+    const otaDecision = await computeRollingOtaDecision(normalizedDeviceId, {
+      now,
+      windowMinutes: 5,
+    });
+
+    console.log('[OTA_ENFORCE]', {
+      deviceId: normalizedDeviceId,
+      action: otaDecision.action,
+      reason: otaDecision.reason,
+      evaluatedAt: now,
+    });
 
     // Enforce decision
     if (otaDecision.action === 'block') {

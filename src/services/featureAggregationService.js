@@ -8,6 +8,7 @@ import { getDb } from '../clients/mongodb.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { getMinioClient } from '../clients/minio.js';
 
 // Get current directory for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -848,26 +849,77 @@ const WINDOW_SIZE_EVENTS = 10;
 
 const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
 
+// Load feature_list.json from current model in MinIO (source of truth)
 const readFeatureList = async () => {
-  const url = new URL('../../feature_list.json', import.meta.url);
-  const raw = await fs.readFile(url, 'utf-8');
-  const data = JSON.parse(raw);
+  const BUCKET = 'models';
+  const CURRENT_OBJECT = 'current';
+  
+  // Resolve current model version
+  const client = getMinioClient();
+  let version;
+  try {
+    const currentStream = await client.getObject(BUCKET, CURRENT_OBJECT);
+    const chunks = [];
+    for await (const chunk of currentStream) {
+      chunks.push(chunk);
+    }
+    version = Buffer.concat(chunks).toString('utf-8').trim();
+    if (!version) {
+      throw new AppError('models/current is empty', 500);
+    }
+    // Validate version exists
+    await client.statObject(BUCKET, `${version}/metadata.json`);
+  } catch (error) {
+    if (error.code === 'NoSuchKey' || error.code === 'NotFound') {
+      throw new AppError(`Model version not found: ${error.message}`, 500);
+    }
+    throw new AppError(`Failed to resolve current model version: ${error.message}`, 500);
+  }
+  
+  // Load feature_list.json from model directory
+  let featureListStream;
+  try {
+    featureListStream = await client.getObject(BUCKET, `${version}/feature_list.json`);
+  } catch (error) {
+    if (error.code === 'NoSuchKey' || error.code === 'NotFound') {
+      throw new AppError(`feature_list.json not found for model ${version}`, 500);
+    }
+    throw new AppError(`Failed to load feature_list.json: ${error.message}`, 500);
+  }
+  
+  const chunks = [];
+  for await (const chunk of featureListStream) {
+    chunks.push(chunk);
+  }
+  const content = Buffer.concat(chunks).toString('utf-8');
+  const data = JSON.parse(content);
+  
   if (!Array.isArray(data)) {
     throw new AppError('feature_list.json must be an array', 500);
   }
-  // Training contract uses 77 base features (no OTA features in this list).
-  return data.filter((name) => typeof name === 'string' && !name.startsWith('ota_'));
+  
+  if (data.length === 0) {
+    throw new AppError('feature_list.json is empty', 500);
+  }
+  
+  console.log(`[FeatureAggregation] Loaded feature_list.json from model ${version} (${data.length} features)`);
+  return data;
 };
 
-const fetchRecentMetricEvents = async (deviceId) => {
+const fetchRecentMetricEvents = async (deviceId, runId = null) => {
   const queryApi = getQueryApi();
 
   // Pivot to get one row per timestamp (event) with all metric fields.
+  const runIdFilter = runId
+    ? `      |> filter(fn: (r) => r.runId == "${runId}")`
+    : '';
+
   const fluxQuery = `
     from(bucket: "${config.influx.bucket}")
       |> range(start: -365d)
       |> filter(fn: (r) => r._measurement == "device_metrics")
       |> filter(fn: (r) => r.deviceId == "${deviceId}")
+${runIdFilter}
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
       |> sort(columns: ["_time"], desc: true)
       |> limit(n: ${WINDOW_SIZE_EVENTS})
@@ -934,13 +986,210 @@ const computePresent = (events, rawKey) => {
   return events.some((e) => isFiniteNumber(e.raw?.[rawKey])) ? 1 : 0;
 };
 
-export const buildMlInferenceVector = async (deviceId) => {
-  const baseFeatures = await readFeatureList();
-  if (baseFeatures.length !== 77) {
-    throw new AppError(`feature_list.json (without ota_*) must contain 77 base features, got ${baseFeatures.length}`, 500);
+// Helper function to compute feature value from aggregated metrics
+// Maps model feature names to computed values from window events
+const computeFeatureValue = (featureName, aggregatedMetrics, windowEvents, timestampsMs, windowMinutes) => {
+  const { cpu, mem, storage, battery, temp, uptime, workload, errorCount, rssi, latency, packetLoss, firstTs } = aggregatedMetrics;
+  
+  // Direct match (exact feature name exists in aggregated metrics)
+  if (aggregatedMetrics[featureName] !== undefined) {
+    return aggregatedMetrics[featureName];
+  }
+  
+  // Flexible name matching for common patterns
+  // CPU features: cpu_mean -> cpu_usage_mean, cpu_std -> cpu_usage_std, etc.
+  if (featureName.startsWith('cpu_')) {
+    const suffix = featureName.replace('cpu_', '');
+    const mappedName = `cpu_usage_${suffix}`;
+    if (aggregatedMetrics[mappedName] !== undefined) {
+      return aggregatedMetrics[mappedName];
+    }
+    if (cpu && cpu.length > 0) {
+      if (suffix === 'mean') return mean(cpu);
+      if (suffix === 'std') return std(cpu);
+      if (suffix === 'min') return min(cpu);
+      if (suffix === 'max') return max(cpu);
+    }
+  }
+  
+  // Memory features: memory_mean -> mem_usage_mean, etc.
+  if (featureName.startsWith('memory_')) {
+    const suffix = featureName.replace('memory_', '');
+    const mappedName = `mem_usage_${suffix}`;
+    if (aggregatedMetrics[mappedName] !== undefined) {
+      return aggregatedMetrics[mappedName];
+    }
+    if (mem && mem.length > 0) {
+      if (suffix === 'mean') return mean(mem);
+      if (suffix === 'std') return std(mem);
+      if (suffix === 'min') return min(mem);
+      if (suffix === 'max') return max(mem);
+    }
+  }
+  
+  // Temperature features
+  if (featureName.startsWith('temperature_')) {
+    const suffix = featureName.replace('temperature_', '');
+    const mappedName = `temperature_${suffix}`;
+    if (aggregatedMetrics[mappedName] !== undefined) {
+      return aggregatedMetrics[mappedName];
+    }
+    if (temp && temp.length > 0) {
+      if (suffix === 'mean') return mean(temp);
+      if (suffix === 'std') return std(temp);
+      if (suffix === 'min') return min(temp);
+      if (suffix === 'max') return max(temp);
+    }
+  }
+  
+  // Latency features: latency_mean -> network_latency_ms_mean, etc.
+  if (featureName.startsWith('latency_')) {
+    const suffix = featureName.replace('latency_', '');
+    const mappedName = `network_latency_ms_${suffix}`;
+    if (aggregatedMetrics[mappedName] !== undefined) {
+      return aggregatedMetrics[mappedName];
+    }
+    if (latency && latency.length > 0) {
+      if (suffix === 'mean') return mean(latency);
+      if (suffix === 'std') return std(latency);
+      if (suffix === 'min') return min(latency);
+      if (suffix === 'max') return max(latency);
+    }
+  }
+  
+  // Packet loss features: packet_loss_mean -> packet_loss_pct_mean, etc.
+  if (featureName.startsWith('packet_loss_')) {
+    const suffix = featureName.replace('packet_loss_', '');
+    const mappedName = `packet_loss_pct_${suffix}`;
+    if (aggregatedMetrics[mappedName] !== undefined) {
+      return aggregatedMetrics[mappedName];
+    }
+    if (packetLoss && packetLoss.length > 0) {
+      if (suffix === 'mean') return mean(packetLoss);
+      if (suffix === 'std') return std(packetLoss);
+      if (suffix === 'min') return min(packetLoss);
+      if (suffix === 'max') return max(packetLoss);
+    }
+  }
+  
+  // Derived features
+  if (featureName === 'cpu_memory_ratio') {
+    if (cpu && cpu.length > 0 && mem && mem.length > 0) {
+      const cpuMean = mean(cpu);
+      const memMean = mean(mem);
+      return memMean > 0 ? cpuMean / memMean : 0;
+    }
+  }
+  
+  if (featureName === 'latency_packet_correlation') {
+    if (latency && latency.length > 0 && packetLoss && packetLoss.length > 0 && latency.length === packetLoss.length) {
+      const latencyMean = mean(latency);
+      const packetLossMean = mean(packetLoss);
+      let covariance = 0;
+      for (let i = 0; i < latency.length; i++) {
+        covariance += (latency[i] - latencyMean) * (packetLoss[i] - packetLossMean);
+      }
+      const latencyStd = std(latency);
+      const packetLossStd = std(packetLoss);
+      if (latencyStd > 0 && packetLossStd > 0) {
+        return covariance / (latency.length * latencyStd * packetLossStd);
+      }
+    }
+  }
+  
+  if (featureName === 'temperature_variance') {
+    if (temp && temp.length > 0) {
+      const tempStd = std(temp);
+      return tempStd * tempStd;
+    }
+  }
+  
+  if (featureName === 'missing_ratio') {
+    const expected = windowEvents.length > 0 ? windowEvents.length : 1;
+    let missingCount = 0;
+    for (const event of windowEvents) {
+      const hasAnyMetric = Object.values(event.raw || {}).some(v => isFiniteNumber(v));
+      if (!hasAnyMetric) missingCount++;
+    }
+    return expected > 0 ? (missingCount / expected) : 0;
+  }
+  
+  if (featureName === 'variance_score') {
+    const allValues = [];
+    for (const event of windowEvents) {
+      const raw = event.raw || {};
+      for (const v of Object.values(raw)) {
+        if (isFiniteNumber(v)) allValues.push(v);
+      }
+    }
+    if (allValues.length > 0) {
+      const overallStd = std(allValues);
+      return overallStd * overallStd;
+    }
+  }
+  
+  if (featureName === 'correlation_strength') {
+    if (cpu && cpu.length > 0 && mem && mem.length > 0 && cpu.length === mem.length) {
+      const cpuMean = mean(cpu);
+      const memMean = mean(mem);
+      let covariance = 0;
+      for (let i = 0; i < cpu.length; i++) {
+        covariance += (cpu[i] - cpuMean) * (mem[i] - memMean);
+      }
+      const cpuStd = std(cpu);
+      const memStd = std(mem);
+      if (cpuStd > 0 && memStd > 0) {
+        return Math.abs(covariance / (cpu.length * cpuStd * memStd));
+      }
+    }
+  }
+  
+  // Time features
+  if (featureName === 'window_duration_minutes') {
+    return windowMinutes;
+  }
+  if (firstTs && featureName === 'window_start_hour') {
+    return firstTs.getUTCHours();
+  }
+  if (firstTs && featureName === 'window_start_day_of_week') {
+    return firstTs.getUTCDay();
+  }
+  if (firstTs && featureName === 'is_weekend') {
+    return (firstTs.getUTCDay() === 0 || firstTs.getUTCDay() === 6) ? 1 : 0;
+  }
+  
+  // Time gap features
+  if (featureName === 'time_gap_avg' && timestampsMs.length > 1) {
+    const gaps = [];
+    for (let i = 1; i < timestampsMs.length; i += 1) {
+      const gapSec = (timestampsMs[i] - timestampsMs[i - 1]) / 1000;
+      if (gapSec > 0) gaps.push(gapSec);
+    }
+    if (gaps.length > 0) return mean(gaps);
+  }
+  if (featureName === 'time_gap_std' && timestampsMs.length > 1) {
+    const gaps = [];
+    for (let i = 1; i < timestampsMs.length; i += 1) {
+      const gapSec = (timestampsMs[i] - timestampsMs[i - 1]) / 1000;
+      if (gapSec > 0) gaps.push(gapSec);
+    }
+    if (gaps.length > 0) return std(gaps);
+  }
+  
+  // Default: feature not found, return 0
+  return 0;
+};
+
+export const buildMlInferenceVector = async (deviceId, options = {}) => {
+  const { runId = null } = options;
+  // Load feature_list.json from current model in MinIO (source of truth)
+  const featureList = await readFeatureList();
+  
+  if (!Array.isArray(featureList) || featureList.length === 0) {
+    throw new AppError('feature_list.json must be a non-empty array', 500);
   }
 
-  const rawEvents = await fetchRecentMetricEvents(deviceId);
+  const rawEvents = await fetchRecentMetricEvents(deviceId, runId);
   if (!rawEvents.length) {
     throw new AppError('No metrics events available for ML inference', 400);
   }
@@ -960,8 +1209,35 @@ export const buildMlInferenceVector = async (deviceId) => {
     .map((e) => ({ ...e, raw: normalizeRawMetrics(e.metrics) }))
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-  // Window size = 10 events; if fewer, use all available (single window).
+  // HARD GATE: inference requires a fully populated window.
+  if (events.length < WINDOW_SIZE_EVENTS) {
+    console.warn('[ML_WINDOW_INFO]', {
+      deviceId,
+      runId,
+      totalEvents: rawEvents.length,
+      usableEvents: events.length,
+      requiredEvents: WINDOW_SIZE_EVENTS,
+      firstTs: events[0]?.timestamp ?? null,
+      lastTs: events[events.length - 1]?.timestamp ?? null,
+    });
+    throw new AppError(
+      `ML_CONTRACT_VIOLATION: underfilled window (have=${events.length}, need=${WINDOW_SIZE_EVENTS})`,
+      400,
+    );
+  }
+
+  // Window size = 10 events; if more, use the most recent window.
   const windowEvents = events.length <= WINDOW_SIZE_EVENTS ? events : events.slice(-WINDOW_SIZE_EVENTS);
+
+  console.log('[ML_WINDOW_INFO]', {
+    deviceId,
+    runId,
+    totalEvents: rawEvents.length,
+    usableEvents: events.length,
+    windowSize: WINDOW_SIZE_EVENTS,
+    firstTs: windowEvents[0]?.timestamp ?? null,
+    lastTs: windowEvents[windowEvents.length - 1]?.timestamp ?? null,
+  });
 
   const firstTs = windowEvents[0]?.timestamp ?? null;
   const lastTs = windowEvents[windowEvents.length - 1]?.timestamp ?? null;
@@ -984,123 +1260,126 @@ export const buildMlInferenceVector = async (deviceId) => {
 
   const timestampsMs = windowEvents.map((e) => e.timestamp.getTime()).filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
 
-  // Build base features (77 keys) with safe defaults (0).
-  const features = Object.fromEntries(baseFeatures.map((k) => [k, 0]));
+  // Build aggregated metrics object (for backward compatibility with existing aggregation logic)
+  const aggregatedMetrics = {
+    cpu,
+    mem,
+    storage,
+    battery,
+    temp,
+    uptime,
+    workload,
+    errorCount,
+    rssi,
+    latency,
+    packetLoss,
+    firstTs,
+  };
 
-  // Time features (based on first event timestamp).
-  if (firstTs) {
-    features.window_duration_minutes = windowMinutes;
-    features.window_start_hour = firstTs.getUTCHours();
-    features.window_start_day_of_week = firstTs.getUTCDay();
-    features.is_weekend = firstTs.getUTCDay() === 0 || firstTs.getUTCDay() === 6 ? 1 : 0;
-  }
 
-  // Helpers from existing aggregation.
+  // Pre-compute common aggregated features (for backward compatibility)
   if (cpu.length) {
-    features.cpu_usage_mean = mean(cpu);
-    features.cpu_usage_std = std(cpu);
-    features.cpu_usage_min = min(cpu);
-    features.cpu_usage_max = max(cpu);
-    features.cpu_usage_median = median(cpu);
-    features.cpu_usage_high_pct = pctAbove(cpu, 80);
-    features.cpu_spike_ratio = spikeRatio(cpu);
+    aggregatedMetrics.cpu_usage_mean = mean(cpu);
+    aggregatedMetrics.cpu_usage_std = std(cpu);
+    aggregatedMetrics.cpu_usage_min = min(cpu);
+    aggregatedMetrics.cpu_usage_max = max(cpu);
+    aggregatedMetrics.cpu_usage_median = median(cpu);
+    aggregatedMetrics.cpu_usage_high_pct = pctAbove(cpu, 80);
+    aggregatedMetrics.cpu_spike_ratio = spikeRatio(cpu);
   }
   if (mem.length) {
-    features.mem_usage_mean = mean(mem);
-    features.mem_usage_std = std(mem);
-    features.mem_usage_min = min(mem);
-    features.mem_usage_max = max(mem);
-    features.mem_usage_median = median(mem);
-    features.mem_spike_ratio = spikeRatio(mem);
+    aggregatedMetrics.mem_usage_mean = mean(mem);
+    aggregatedMetrics.mem_usage_std = std(mem);
+    aggregatedMetrics.mem_usage_min = min(mem);
+    aggregatedMetrics.mem_usage_max = max(mem);
+    aggregatedMetrics.mem_usage_median = median(mem);
+    aggregatedMetrics.mem_spike_ratio = spikeRatio(mem);
   }
   if (storage.length) {
-    features.storage_mb_mean = mean(storage);
-    features.storage_mb_std = std(storage);
-    features.storage_mb_min = min(storage);
-    features.storage_mb_max = max(storage);
-    features.storage_mb_median = median(storage);
+    aggregatedMetrics.storage_mb_mean = mean(storage);
+    aggregatedMetrics.storage_mb_std = std(storage);
+    aggregatedMetrics.storage_mb_min = min(storage);
+    aggregatedMetrics.storage_mb_max = max(storage);
+    aggregatedMetrics.storage_mb_median = median(storage);
   }
   if (battery.length) {
-    features.battery_level_mean = mean(battery);
-    features.battery_level_std = std(battery);
-    features.battery_level_min = min(battery);
-    features.battery_level_max = max(battery);
-    features.battery_level_median = median(battery);
-    features.battery_level_delta = delta(battery);
-    features.battery_drain_rate = windowMinutes > 0 ? rateOfChange(battery, windowMinutes) : 0;
+    aggregatedMetrics.battery_level_mean = mean(battery);
+    aggregatedMetrics.battery_level_std = std(battery);
+    aggregatedMetrics.battery_level_min = min(battery);
+    aggregatedMetrics.battery_level_max = max(battery);
+    aggregatedMetrics.battery_level_median = median(battery);
+    aggregatedMetrics.battery_level_delta = delta(battery);
+    aggregatedMetrics.battery_drain_rate = windowMinutes > 0 ? rateOfChange(battery, windowMinutes) : 0;
   }
   if (temp.length) {
-    features.temperature_mean = mean(temp);
-    features.temperature_std = std(temp);
-    features.temperature_min = min(temp);
-    features.temperature_max = max(temp);
-    features.temperature_median = median(temp);
-    features.temperature_high_pct = pctAbove(temp, 70);
-    features.temp_rate = windowMinutes > 0 ? rateOfChange(temp, windowMinutes) : 0;
+    aggregatedMetrics.temperature_mean = mean(temp);
+    aggregatedMetrics.temperature_std = std(temp);
+    aggregatedMetrics.temperature_min = min(temp);
+    aggregatedMetrics.temperature_max = max(temp);
+    aggregatedMetrics.temperature_median = median(temp);
+    aggregatedMetrics.temperature_high_pct = pctAbove(temp, 70);
+    aggregatedMetrics.temp_rate = windowMinutes > 0 ? rateOfChange(temp, windowMinutes) : 0;
   }
   if (uptime.length) {
-    features.uptime_hrs_mean = mean(uptime);
-    features.uptime_hrs_std = std(uptime);
-    features.uptime_hrs_min = min(uptime);
-    features.uptime_hrs_max = max(uptime);
-    features.uptime_hrs_median = median(uptime);
+    aggregatedMetrics.uptime_hrs_mean = mean(uptime);
+    aggregatedMetrics.uptime_hrs_std = std(uptime);
+    aggregatedMetrics.uptime_hrs_min = min(uptime);
+    aggregatedMetrics.uptime_hrs_max = max(uptime);
+    aggregatedMetrics.uptime_hrs_median = median(uptime);
   }
   if (workload.length) {
-    features.workload_level_mean = mean(workload);
-    features.workload_level_std = std(workload);
-    features.workload_level_min = min(workload);
-    features.workload_level_max = max(workload);
-    features.workload_level_median = median(workload);
+    aggregatedMetrics.workload_level_mean = mean(workload);
+    aggregatedMetrics.workload_level_std = std(workload);
+    aggregatedMetrics.workload_level_min = min(workload);
+    aggregatedMetrics.workload_level_max = max(workload);
+    aggregatedMetrics.workload_level_median = median(workload);
     if (cpu.length > 1) {
       const cpuStd = std(cpu);
       const cpuMean = mean(cpu);
-      features.workload_change_rate = cpuMean > 0 ? (cpuStd / cpuMean) * 100 : 0;
+      aggregatedMetrics.workload_change_rate = cpuMean > 0 ? (cpuStd / cpuMean) * 100 : 0;
     }
   }
   if (errorCount.length) {
-    features.error_count_mean = mean(errorCount);
-    features.error_count_std = std(errorCount);
-    features.error_count_min = min(errorCount);
-    features.error_count_max = max(errorCount);
-    features.error_count_median = median(errorCount);
+    aggregatedMetrics.error_count_mean = mean(errorCount);
+    aggregatedMetrics.error_count_std = std(errorCount);
+    aggregatedMetrics.error_count_min = min(errorCount);
+    aggregatedMetrics.error_count_max = max(errorCount);
+    aggregatedMetrics.error_count_median = median(errorCount);
   }
   if (rssi.length) {
-    features.rssi_mean = mean(rssi);
-    features.rssi_std = std(rssi);
-    features.rssi_min = min(rssi);
-    features.rssi_max = max(rssi);
-    features.rssi_median = median(rssi);
-    features.rssi_poor_pct = pctAbove(rssi.map((v) => -v), 80);
-    features.rssi_trend = trendSlope(rssi);
+    aggregatedMetrics.rssi_mean = mean(rssi);
+    aggregatedMetrics.rssi_std = std(rssi);
+    aggregatedMetrics.rssi_min = min(rssi);
+    aggregatedMetrics.rssi_max = max(rssi);
+    aggregatedMetrics.rssi_median = median(rssi);
+    aggregatedMetrics.rssi_poor_pct = pctAbove(rssi.map((v) => -v), 80);
+    aggregatedMetrics.rssi_trend = trendSlope(rssi);
     const rssiStd = std(rssi);
-    features.rssi_stability = rssiStd > 0 ? 100 / (1 + rssiStd) : 100;
+    aggregatedMetrics.rssi_stability = rssiStd > 0 ? 100 / (1 + rssiStd) : 100;
   }
   if (latency.length) {
-    features.network_latency_ms_mean = mean(latency);
-    features.network_latency_ms_std = std(latency);
-    features.network_latency_ms_min = min(latency);
-    features.network_latency_ms_max = max(latency);
-    features.network_latency_ms_median = median(latency);
-    features.latency_spike_ratio = spikeRatio(latency);
+    aggregatedMetrics.network_latency_ms_mean = mean(latency);
+    aggregatedMetrics.network_latency_ms_std = std(latency);
+    aggregatedMetrics.network_latency_ms_min = min(latency);
+    aggregatedMetrics.network_latency_ms_max = max(latency);
+    aggregatedMetrics.network_latency_ms_median = median(latency);
+    aggregatedMetrics.latency_spike_ratio = spikeRatio(latency);
   }
-  // Missing latency % is computed against the count-based window size.
   {
     const expected = windowEvents.length > 0 ? windowEvents.length : 1;
     const actual = latency.length;
-    features.network_latency_ms_missing_pct = expected > 0 ? ((expected - actual) / expected) * 100 : 0;
+    aggregatedMetrics.network_latency_ms_missing_pct = expected > 0 ? ((expected - actual) / expected) * 100 : 0;
   }
   if (packetLoss.length) {
-    features.packet_loss_pct_mean = mean(packetLoss);
-    features.packet_loss_pct_std = std(packetLoss);
-    features.packet_loss_pct_min = min(packetLoss);
-    features.packet_loss_pct_max = max(packetLoss);
-    features.packet_loss_pct_median = median(packetLoss);
-    features.packet_loss_pct_high_pct = pctAbove(packetLoss, 5);
-    features.packet_loss_spike_ratio = spikeRatio(packetLoss);
-    features.packet_loss_trend = trendSlope(packetLoss);
+    aggregatedMetrics.packet_loss_pct_mean = mean(packetLoss);
+    aggregatedMetrics.packet_loss_pct_std = std(packetLoss);
+    aggregatedMetrics.packet_loss_pct_min = min(packetLoss);
+    aggregatedMetrics.packet_loss_pct_max = max(packetLoss);
+    aggregatedMetrics.packet_loss_pct_median = median(packetLoss);
+    aggregatedMetrics.packet_loss_pct_high_pct = pctAbove(packetLoss, 5);
+    aggregatedMetrics.packet_loss_spike_ratio = spikeRatio(packetLoss);
+    aggregatedMetrics.packet_loss_trend = trendSlope(packetLoss);
   }
-
-  // Temporal consistency (time_gap_*)
   if (timestampsMs.length > 1) {
     const gaps = [];
     for (let i = 1; i < timestampsMs.length; i += 1) {
@@ -1108,49 +1387,37 @@ export const buildMlInferenceVector = async (deviceId) => {
       if (gapSec > 0) gaps.push(gapSec);
     }
     if (gaps.length) {
-      features.time_gap_avg = mean(gaps);
-      features.time_gap_std = std(gaps);
+      aggregatedMetrics.time_gap_avg = mean(gaps);
+      aggregatedMetrics.time_gap_std = std(gaps);
     }
   }
 
-  // Build 154-feature payload in strict interleaved order.
+  // Build feature vector strictly following feature_list.json order
+  // DO NOT assume _present masks exist - only include features that exist in feature_list.json
   const out = {};
-  const expectedOrder = [];
-  for (const f of baseFeatures) {
-    expectedOrder.push(f, `${f}_present`);
-    out[f] = isFiniteNumber(features[f]) ? features[f] : 0;
-
-    // Presence masks are derived from raw metric presence, not from derived feature values.
-    let present = 1;
-    if (f.startsWith('cpu_usage_') || f === 'cpu_spike_ratio') present = computePresent(windowEvents, 'cpu_usage');
-    else if (f.startsWith('mem_usage_') || f === 'mem_spike_ratio') present = computePresent(windowEvents, 'mem_usage');
-    else if (f.startsWith('storage_mb_')) present = computePresent(windowEvents, 'storage_mb');
-    else if (f.startsWith('battery_level_') || f === 'battery_drain_rate') present = computePresent(windowEvents, 'battery_level');
-    else if (f.startsWith('temperature_') || f === 'temp_rate') present = computePresent(windowEvents, 'temperature');
-    else if (f.startsWith('uptime_hrs_')) present = computePresent(windowEvents, 'uptime_hrs');
-    else if (f.startsWith('workload_level_') || f === 'workload_change_rate') present = computePresent(windowEvents, 'workload_level');
-    else if (f.startsWith('error_count_')) present = computePresent(windowEvents, 'error_count');
-    else if (f.startsWith('rssi_') || f === 'rssi_trend' || f === 'rssi_stability') present = computePresent(windowEvents, 'rssi');
-    else if (f.startsWith('network_latency_ms_') || f === 'latency_spike_ratio') present = computePresent(windowEvents, 'network_latency_ms');
-    else if (f.startsWith('packet_loss_pct_') || f === 'packet_loss_trend' || f === 'packet_loss_spike_ratio') present = computePresent(windowEvents, 'packet_loss_pct');
-    else if (f.startsWith('time_gap_')) present = timestampsMs.length > 1 ? 1 : 0;
-    else if (f.startsWith('window_') || f === 'is_weekend') present = windowEvents.length > 0 ? 1 : 0;
-
-    out[`${f}_present`] = present;
+  for (const featureName of featureList) {
+    // Skip invalid feature names
+    if (typeof featureName !== 'string') {
+      continue;
+    }
+    
+    // Compute feature value
+    const value = computeFeatureValue(featureName, aggregatedMetrics, windowEvents, timestampsMs, windowMinutes);
+    out[featureName] = isFiniteNumber(value) ? value : 0;
   }
 
-  // Contract assertions: exact feature names, order, and numeric values only.
+  // Contract assertions: exact feature names, order, and numeric values only
   const actualOrder = Object.keys(out);
-  if (actualOrder.length !== 154) {
+  if (actualOrder.length !== featureList.length) {
     throw new AppError(
-      `ML CONTRACT VIOLATION: feature vector length mismatch in featureAggregationService.js#buildMlInferenceVector (expected=154, actual=${actualOrder.length})`,
+      `ML CONTRACT VIOLATION: feature vector length mismatch (expected=${featureList.length}, actual=${actualOrder.length})`,
       500,
     );
   }
-  for (let i = 0; i < expectedOrder.length; i += 1) {
-    if (actualOrder[i] !== expectedOrder[i]) {
+  for (let i = 0; i < featureList.length; i += 1) {
+    if (actualOrder[i] !== featureList[i]) {
       throw new AppError(
-        `ML CONTRACT VIOLATION: feature order mismatch at index=${i} in featureAggregationService.js#buildMlInferenceVector (expected=${expectedOrder[i]}, actual=${actualOrder[i]})`,
+        `ML CONTRACT VIOLATION: feature order mismatch at index=${i} (expected=${featureList[i]}, actual=${actualOrder[i]})`,
         500,
       );
     }
@@ -1158,13 +1425,7 @@ export const buildMlInferenceVector = async (deviceId) => {
   for (const [k, v] of Object.entries(out)) {
     if (typeof v !== 'number' || !Number.isFinite(v)) {
       throw new AppError(
-        `ML CONTRACT VIOLATION: non-numeric feature value for ${k} in featureAggregationService.js#buildMlInferenceVector`,
-        500,
-      );
-    }
-    if (k.endsWith('_present') && !(v === 0 || v === 1)) {
-      throw new AppError(
-        `ML CONTRACT VIOLATION: invalid _present value for ${k} (expected 0|1, got ${v}) in featureAggregationService.js#buildMlInferenceVector`,
+        `ML CONTRACT VIOLATION: non-numeric feature value for ${k}`,
         500,
       );
     }

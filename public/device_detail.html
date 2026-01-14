@@ -1082,7 +1082,7 @@
                         </div>
                         <div>
                             <h3 class="text-lg font-semibold text-gray-900 mb-2">
-                                CPU Usage${lastCpu !== undefined ? ` (last: ${(lastCpu * 100).toFixed(1)}%)` : ''}
+                                CPU Usage${lastCpu !== undefined ? ` (last: ${lastCpu.toFixed(1)}%)` : ''}
                             </h3>
                             <div class="h-64">
                                 <canvas id="cpuChart"></canvas>
@@ -1098,7 +1098,7 @@
                         </div>
                         <div>
                             <h3 class="text-lg font-semibold text-gray-900 mb-2">
-                                Battery Level${lastBattery !== undefined ? ` (last: ${(lastBattery * 100).toFixed(1)}%)` : ''}
+                                Battery Level${lastBattery !== undefined ? ` (last: ${lastBattery.toFixed(1)}%)` : ''}
                             </h3>
                             <div class="h-64">
                                 <canvas id="batteryChart"></canvas>

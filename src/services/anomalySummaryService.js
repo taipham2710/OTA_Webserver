@@ -110,3 +110,61 @@ export const getAnomalyHistorySummaryForDevice = async (deviceId, { now = new Da
 
   return computeAnomalyHistorySummary({ deviceId, events, now });
 };
+
+// Rolling-window OTA decision based on anomaly_events history.
+// Industry-standard policy:
+// - If ANY high-risk event exists in the rolling window -> BLOCK
+// - Else if ANY medium-risk event exists -> DELAY
+// - Else -> ALLOW
+export const computeRollingOtaDecision = async (deviceId, { now = new Date(), windowMinutes = 5 } = {}) => {
+  const db = await getDb();
+  const nowDate = toDate(now) ?? new Date();
+  const since = new Date(nowDate.getTime() - windowMinutes * 60 * 1000);
+
+  const events = await db
+    .collection('anomaly_events')
+    .find({ deviceId, decided_at: { $gte: since } })
+    .sort({ decided_at: -1 })
+    .toArray();
+
+  const norm = (v) => (typeof v === 'string' ? v.trim().toLowerCase() : null);
+  const hasHigh = events.some((e) => norm(e.risk_level) === 'high');
+  const hasMedium = events.some((e) => norm(e.risk_level) === 'medium');
+
+  let result;
+  if (!events.length) {
+    // No recent anomaly information: fail-closed with DELAY (conservative).
+    result = {
+      action: 'delay',
+      reason: ['no recent anomaly data'],
+    };
+  } else if (hasHigh) {
+    result = {
+      action: 'block',
+      reason: ['high anomaly risk in rolling window'],
+    };
+  } else if (hasMedium) {
+    result = {
+      action: 'delay',
+      reason: ['medium anomaly risk in rolling window'],
+    };
+  } else {
+    result = {
+      action: 'allow',
+      reason: ['only low risk in rolling window'],
+    };
+  }
+
+  console.log('[OTA_ROLLING_DECISION]', {
+    deviceId,
+    windowMinutes,
+    now: nowDate,
+    eventCount: events.length,
+    highCount: hasHigh ? events.filter((e) => norm(e.risk_level) === 'high').length : 0,
+    mediumCount: hasMedium ? events.filter((e) => norm(e.risk_level) === 'medium').length : 0,
+    action: result.action,
+    reason: result.reason,
+  });
+
+  return result;
+};

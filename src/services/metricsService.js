@@ -39,9 +39,16 @@ export const ingestMetrics = async (metricsData) => {
       throw new AppError('Invalid timestamp format', 400);
     }
 
+    // Optional run/session identifier for strict window isolation.
+    if (metricsData.runId && typeof metricsData.runId !== 'string') {
+      throw new AppError('runId must be a string when provided', 400);
+    }
+
     const writeApi = getWriteApi();
     const point = new Point('device_metrics')
       .tag('deviceId', metricsData.deviceId)
+      // Run/session isolation tag so inference can filter windows by runId.
+      .tag('runId', metricsData.runId || 'default')
       // Used by the ML feature aggregation layer to enforce timestamp provenance.
       .booleanField('timestamp_provided', true)
       .timestamp(timestamp);
