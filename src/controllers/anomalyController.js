@@ -42,11 +42,12 @@ export const getAnomalyHandler = async (req, res, next) => {
 export const getAnomalyAnalysisHandler = async (req, res, next) => {
   try {
     const deviceId = validateDeviceId(req.params.device_id);
+    const runId = typeof req.query.run_id === 'string' ? req.query.run_id : null;
 
     // Manual analysis is read-only: no DB writes, no anomaly history writes.
     let featureVector;
     try {
-      featureVector = await buildFeatureVectorCountBased(deviceId);
+      featureVector = await buildFeatureVectorCountBased(deviceId, { runId });
     } catch (error) {
       if (isMlContractViolation(error)) {
         res.status(400).json({
@@ -100,6 +101,7 @@ export const getAnomalyAnalysisHandler = async (req, res, next) => {
 export const postAnomalyInferHandler = async (req, res, next) => {
   try {
     const deviceId = validateDeviceId(req.params.device_id);
+    const runId = typeof req.query.run_id === 'string' ? req.query.run_id : null;
 
     // Ensure device exists before doing any expensive aggregation/inference
     const db = await getDb();
@@ -111,7 +113,7 @@ export const postAnomalyInferHandler = async (req, res, next) => {
     // 1) Aggregate features (ML training contract: count-based window, ordered feature list)
     let featureVector;
     try {
-      featureVector = await buildFeatureVectorCountBased(deviceId);
+      featureVector = await buildFeatureVectorCountBased(deviceId, { runId });
     } catch (error) {
       if (isMlContractViolation(error)) {
         // HARD FAIL on contract violation: do not update device state, do not insert events.
@@ -184,6 +186,11 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       throw new AppError('Invalid inference response', 502);
     }
 
+    // 3.25) Validate model_version (warn if missing but don't fail)
+    if (!model_version || typeof model_version !== 'string') {
+      console.warn(`[AnomalyController] model_version missing from inference response for deviceId=${deviceId}. Inference service should include model metadata.`);
+    }
+
     // 3.5) Compute feature deviations (non-blocking)
     let deviationsResult = { deviations: [] };
     try {
@@ -192,6 +199,17 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       // Non-blocking: log but don't fail inference
       console.warn(`[AnomalyController] Failed to compute feature deviations: ${deviationError.message}`);
     }
+
+    // Log anomaly event for determinism/debugging (before persistence).
+    console.log('[ANOMALY_EVENT]', {
+      deviceId,
+      runId,
+      score,
+      risk_level,
+      decision: otaPolicyDecision(risk_level).decision,
+      threshold,
+      soft_threshold: softThreshold,
+    });
 
     // 4) Delegate OTA decision to policy engine (separation of concerns)
     const policyResult = otaPolicyDecision(risk_level);
@@ -204,6 +222,7 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       decision,
       threshold,
       soft_threshold: softThreshold,
+      model_version: model_version || null,
       updated_at: now,
     };
 
@@ -225,6 +244,7 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       decision,
       threshold,
       soft_threshold: softThreshold,
+      model_version: model_version || null,
       decided_at: now,
       source: 'ml-inference',
     });
