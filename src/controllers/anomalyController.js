@@ -80,10 +80,34 @@ export const getAnomalyAnalysisHandler = async (req, res, next) => {
       throw new AppError('Inference service unavailable', 503);
     }
 
-    // Return upstream result only (read-only).
+    // Extract model_version from inference response for consistency
+    const modelVersion = upstream.data.model_version || null;
+
+    // Compute feature deviations (non-blocking) using model_version from inference
+    let deviationsResult = { deviations: [] };
+    try {
+      deviationsResult = await computeFeatureDeviations(featureVector, 10, modelVersion);
+    } catch (deviationError) {
+      // Non-blocking: log but don't fail inference
+      console.warn(`[AnomalyController] Failed to compute feature deviations: ${deviationError.message}`);
+    }
+
+    // Map deviations to feature_explanations schema
+    const feature_explanations = (deviationsResult.deviations || []).map((d) => ({
+      feature: d.feature,
+      current_value: d.current_value,
+      baseline_value: d.baseline_value ?? null,
+      deviation: d.deviation ?? d.deviation_score ?? 0,
+      direction: d.direction ?? 'neutral',
+    }));
+
+    // Return upstream result with feature explanations (read-only).
     const responseData = {
       deviceId,
       ...upstream.data,
+      feature_explanations,
+      // Backward compatibility: keep deviations array for existing UI
+      deviations: deviationsResult.deviations || [],
     };
 
     res.json({
@@ -171,7 +195,7 @@ export const postAnomalyInferHandler = async (req, res, next) => {
     const threshold = thresholds?.hard;
     const softThreshold = thresholds?.soft;
     const risk_level = upstream.data.risk_level;
-    const model_version = upstream.data.model_version;
+    const model_version = upstream.data.model_version || null;
 
     if (
       typeof score !== 'number' ||
@@ -191,14 +215,23 @@ export const postAnomalyInferHandler = async (req, res, next) => {
       console.warn(`[AnomalyController] model_version missing from inference response for deviceId=${deviceId}. Inference service should include model metadata.`);
     }
 
-    // 3.5) Compute feature deviations (non-blocking)
+    // 3.5) Compute feature deviations (non-blocking) using model_version from inference
     let deviationsResult = { deviations: [] };
     try {
-      deviationsResult = await computeFeatureDeviations(featureVector, 10);
+      deviationsResult = await computeFeatureDeviations(featureVector, 10, model_version);
     } catch (deviationError) {
       // Non-blocking: log but don't fail inference
       console.warn(`[AnomalyController] Failed to compute feature deviations: ${deviationError.message}`);
     }
+
+    // Map deviations to feature_explanations schema
+    const feature_explanations = (deviationsResult.deviations || []).map((d) => ({
+      feature: d.feature,
+      current_value: d.current_value,
+      baseline_value: d.baseline_value ?? null,
+      deviation: d.deviation ?? d.deviation_score ?? 0,
+      direction: d.direction ?? 'neutral',
+    }));
 
     // Log anomaly event for determinism/debugging (before persistence).
     console.log('[ANOMALY_EVENT]', {
@@ -259,7 +292,8 @@ export const postAnomalyInferHandler = async (req, res, next) => {
         threshold,
         soft_threshold: softThreshold,
         model_version: model_version || null,
-        deviations: deviationsResult.deviations || [],
+        feature_explanations,
+        deviations: deviationsResult.deviations || [], // Backward compatibility
 
         // Backward-compatible aliases for existing UI (read-only display)
         action: decision.toUpperCase(),

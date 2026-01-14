@@ -314,6 +314,12 @@
                     <!-- Current anomaly state is displayed in Overview/Info tab from devices collection -->
                     <h2 class="section-title">Anomaly Timeline</h2>
 
+                    <!-- Display-only notice -->
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm text-blue-900">
+                        <div class="font-semibold mb-1">Display Only — OTA Enforcement Uses Rolling History</div>
+                        <div>This timeline shows historical inference events. OTA decisions are based on rolling history via computeRollingOtaDecision, not individual events.</div>
+                    </div>
+
                     <!-- OTA Recommendation Banner -->
                     <!-- CRITICAL: Banner visibility depends on CURRENT device state, but content comes from latest event -->
                     <div id="ota-banner" class="ota-banner hidden"></div>
@@ -1049,14 +1055,24 @@
                     const metricValues = metric.metrics || {};
 
                     // Map metric keys to chart datasets (fixed keys: cpu_usage, temperature, battery_level)
-                    if (metricValues.cpu_usage !== undefined) {
-                        chartData.cpu.push({ x: timestamp, y: metricValues.cpu_usage });
+                    // CRITICAL: Backend returns cpu_usage and battery_level as absolute percentages [0-100]
+                    // Charts expect percentage format [0-100] for y-axis min:0, max:100
+                    // No normalization needed - backend already sends percentage format
+                    if (metricValues.cpu_usage !== undefined && typeof metricValues.cpu_usage === 'number' && Number.isFinite(metricValues.cpu_usage)) {
+                        // Backend sends percentage [0-100], accept any valid positive number
+                        if (metricValues.cpu_usage >= 0) {
+                            chartData.cpu.push({ x: timestamp, y: metricValues.cpu_usage });
+                        }
                     }
-                    if (metricValues.temperature !== undefined) {
+                    if (metricValues.temperature !== undefined && typeof metricValues.temperature === 'number' && Number.isFinite(metricValues.temperature)) {
+                        // Temperature is in Celsius, no normalization needed
                         chartData.temperature.push({ x: timestamp, y: metricValues.temperature });
                     }
-                    if (metricValues.battery_level !== undefined) {
-                        chartData.battery.push({ x: timestamp, y: metricValues.battery_level });
+                    if (metricValues.battery_level !== undefined && typeof metricValues.battery_level === 'number' && Number.isFinite(metricValues.battery_level)) {
+                        // Backend sends percentage [0-100], accept any valid positive number
+                        if (metricValues.battery_level >= 0) {
+                            chartData.battery.push({ x: timestamp, y: metricValues.battery_level });
+                        }
                     }
                 });
 
@@ -1066,6 +1082,7 @@
                 });
 
                 // Get last values for display
+                // CRITICAL: Backend sends absolute percentages [0-100], use directly
                 const lastCpu = chartData.cpu.at(-1)?.y;
                 const lastTemp = chartData.temperature.at(-1)?.y;
                 const lastBattery = chartData.battery.at(-1)?.y;
@@ -1082,7 +1099,7 @@
                         </div>
                         <div>
                             <h3 class="text-lg font-semibold text-gray-900 mb-2">
-                                CPU Usage${lastCpu !== undefined ? ` (last: ${lastCpu.toFixed(1)}%)` : ''}
+                                CPU Usage (%)${lastCpu !== undefined ? ` (last: ${lastCpu.toFixed(1)}%)` : ''}
                             </h3>
                             <div class="h-64">
                                 <canvas id="cpuChart"></canvas>
@@ -1090,7 +1107,7 @@
                         </div>
                         <div>
                             <h3 class="text-lg font-semibold text-gray-900 mb-2">
-                                Temperature${lastTemp !== undefined ? ` (last: ${lastTemp.toFixed(1)}°C)` : ''}
+                                Temperature (°C)${lastTemp !== undefined ? ` (last: ${lastTemp.toFixed(1)}°C)` : ''}
                             </h3>
                             <div class="h-64">
                                 <canvas id="temperatureChart"></canvas>
@@ -1098,7 +1115,7 @@
                         </div>
                         <div>
                             <h3 class="text-lg font-semibold text-gray-900 mb-2">
-                                Battery Level${lastBattery !== undefined ? ` (last: ${lastBattery.toFixed(1)}%)` : ''}
+                                Battery Level (%)${lastBattery !== undefined ? ` (last: ${lastBattery.toFixed(1)}%)` : ''}
                             </h3>
                             <div class="h-64">
                                 <canvas id="batteryChart"></canvas>
@@ -1159,7 +1176,7 @@
                                             return new Date(items[0].parsed.x).toLocaleString();
                                         },
                                         label: (context) => {
-                                            return `CPU Usage: ${(context.parsed.y * 100).toFixed(1)}%`;
+                                            return `CPU Usage: ${context.parsed.y.toFixed(1)}%`;
                                         },
                                     },
                                 },
@@ -1189,12 +1206,12 @@
                                     ticks: {
                                         color: '#6b7280',
                                         callback: function(value) {
-                                            return (value * 100).toFixed(0) + '%';
+                                            return value.toFixed(0) + '%';
                                         },
                                     },
                                     grid: { color: '#e5e7eb' },
                                     min: 0,
-                                    max: 1,
+                                    max: 100,
                                 },
                             },
                         },
@@ -1307,7 +1324,7 @@
                                             return new Date(items[0].parsed.x).toLocaleString();
                                         },
                                         label: (context) => {
-                                            return `Battery Level: ${(context.parsed.y * 100).toFixed(1)}%`;
+                                            return `Battery Level: ${context.parsed.y.toFixed(1)}%`;
                                         },
                                     },
                                 },
@@ -1337,12 +1354,12 @@
                                     ticks: {
                                         color: '#6b7280',
                                         callback: function(value) {
-                                            return (value * 100).toFixed(0) + '%';
+                                            return value.toFixed(0) + '%';
                                         },
                                     },
                                     grid: { color: '#e5e7eb' },
                                     min: 0,
-                                    max: 1,
+                                    max: 100,
                                 },
                             },
                         },
@@ -1762,7 +1779,9 @@
             const soft = typeof event.soft_threshold === 'number' ? event.soft_threshold.toFixed(4) : 'N/A';
             const risk = event.risk_level || 'N/A';
             const action = event.action || 'N/A';
-            const modelVersion = event.model_version || 'N/A';
+            const modelVersion = (typeof event.model_version === 'string' && event.model_version.trim()) 
+                ? event.model_version.trim() 
+                : null;
 
             return `
                 <div class="anomaly-event">
@@ -1773,7 +1792,7 @@
                         <div><b>Risk:</b> ${risk}</div>
                         <div><b>Score:</b> ${score}</div>
                         <div><b>Hard:</b> ${hard} <b style="margin-left:8px;">Soft:</b> ${soft}</div>
-                        <div><b>Model:</b> ${modelVersion}</div>
+                        ${modelVersion ? `<div><b>Model:</b> ${modelVersion}</div>` : ''}
                     </div>
                 </div>
             `;

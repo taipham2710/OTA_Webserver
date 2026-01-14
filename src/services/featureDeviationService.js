@@ -119,16 +119,19 @@ async function loadJSONFromMinIO_OPTIONAL(bucket, objectPath) {
  * Compute feature deviations from training baseline
  * @param {Object} featureVector - Current feature vector used for inference
  * @param {number} topN - Number of top deviations to return (default: 10)
+ * @param {string} modelVersion - Optional model version from inference response (ensures consistency)
  * @returns {Promise<Object>} Deviations object with top deviations array
  */
-export const computeFeatureDeviations = async (featureVector, topN = 10) => {
+export const computeFeatureDeviations = async (featureVector, topN = 10, modelVersion = null) => {
   if (!featureVector || typeof featureVector !== 'object') {
     return { deviations: [] };
   }
 
   try {
-    // Resolve current model version
-    const version = await resolveCurrentModelVersion();
+    // Use provided model_version from inference response, or resolve current model version
+    const version = (typeof modelVersion === 'string' && modelVersion.trim())
+      ? modelVersion.trim()
+      : await resolveCurrentModelVersion();
     
     // Load feature_stats.json from MinIO (optional - may not exist for all models)
     const BUCKET = 'models';
@@ -173,12 +176,22 @@ export const computeFeatureDeviations = async (featureVector, topN = 10) => {
         ? (currentValue - trainingMean) / trainingStd
         : 0;
 
-      // Use p95 as reference value (more interpretable than mean for outliers)
+      // Baseline value is the training mean (normal reference learned by model)
+      const baselineValue = trainingMean;
+
+      // Use p95 as reference value for display (more interpretable than mean for outliers)
       const reference = trainingP95;
+
+      // Determine direction: "high" | "low" | "neutral"
+      let direction = 'neutral';
+      const absDeviation = Math.abs(deviationScore);
+      if (absDeviation >= 2.0) {
+        // Significant deviation: determine if high or low
+        direction = deviationScore > 0 ? 'high' : 'low';
+      }
 
       // Determine severity based on deviation score
       let severity = 'low';
-      const absDeviation = Math.abs(deviationScore);
       if (absDeviation >= 3.0) {
         severity = 'high';
       } else if (absDeviation >= 2.0) {
@@ -198,8 +211,11 @@ export const computeFeatureDeviations = async (featureVector, topN = 10) => {
       deviations.push({
         feature: featureName,
         current_value: currentValue,
-        reference: reference,
-        deviation_score: deviationScore,
+        baseline_value: baselineValue, // Training mean (normal reference)
+        reference: reference, // p95 for display purposes
+        deviation: deviationScore, // Normalized deviation (z-score)
+        deviation_score: deviationScore, // Alias for backward compatibility
+        direction: direction, // "high" | "low" | "neutral"
         severity: severity,
         explanation: explanation,
       });

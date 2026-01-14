@@ -113,6 +113,76 @@
             return `${elevated} of last ${recentChecks.length} checks were elevated/high`;
         }
 
+        // Feature explanation dictionary (static, no ML logic)
+        const FEATURE_EXPLANATIONS = {
+            'cpu_usage_mean': {
+                what: 'Average CPU utilization over the window',
+                why: 'High CPU indicates device overload, which can cause OTA failures or system instability'
+            },
+            'cpu_usage_std': {
+                what: 'CPU usage variability (standard deviation)',
+                why: 'High variability suggests unstable workload patterns that may indicate system stress'
+            },
+            'mem_usage_mean': {
+                what: 'Average memory utilization over the window',
+                why: 'High memory usage can cause OOM (out-of-memory) errors during OTA updates'
+            },
+            'mem_usage_std': {
+                what: 'Memory usage variability (standard deviation)',
+                why: 'High variability indicates memory pressure and potential resource contention'
+            },
+            'battery_level': {
+                what: 'Device battery charge level',
+                why: 'Low battery increases risk of device shutdown during OTA, causing update corruption'
+            },
+            'temperature_mean': {
+                what: 'Average device temperature over the window',
+                why: 'High temperature indicates thermal stress, which can cause hardware failures during updates'
+            },
+            'network_latency_ms': {
+                what: 'Network communication latency in milliseconds',
+                why: 'High latency can cause OTA download timeouts and incomplete firmware transfers'
+            },
+            'packet_loss_pct': {
+                what: 'Percentage of network packets lost',
+                why: 'High packet loss indicates unreliable connectivity, risking corrupted OTA downloads'
+            },
+            'correlation_strength': {
+                what: 'Strength of correlation between CPU and memory metrics',
+                why: 'Weak correlation suggests abnormal system behavior, indicating potential hardware or software issues'
+            },
+            'cpu_memory_ratio': {
+                what: 'Ratio of CPU to memory usage',
+                why: 'Abnormal ratios indicate resource imbalance, suggesting system instability'
+            },
+            'time_gap_std': {
+                what: 'Variability in time gaps between metric events',
+                why: 'High variability indicates irregular telemetry, suggesting device communication issues'
+            },
+            'missing_ratio': {
+                what: 'Proportion of missing metric values in the window',
+                why: 'High missing ratio indicates data quality issues, making anomaly detection unreliable'
+            }
+        };
+
+        function getFeatureExplanation(featureName) {
+            // Try exact match first
+            if (FEATURE_EXPLANATIONS[featureName]) {
+                return FEATURE_EXPLANATIONS[featureName];
+            }
+            // Try prefix matches for derived features
+            for (const [key, value] of Object.entries(FEATURE_EXPLANATIONS)) {
+                if (featureName.startsWith(key) || featureName.includes(key)) {
+                    return value;
+                }
+            }
+            // Default explanation
+            return {
+                what: 'Window-level aggregated metric',
+                why: 'Deviation from normal indicates potential system instability or hardware issues'
+            };
+        }
+
         function renderDeviationsTable(deviations) {
             if (!Array.isArray(deviations) || deviations.length === 0) {
                 return '';
@@ -127,17 +197,35 @@
                     const current = typeof d.current_value === 'number' ? d.current_value
                         : typeof d.value === 'number' ? d.value
                         : null;
-                    const ref = typeof d.reference === 'number' ? d.reference
-                        : typeof d.ref === 'number' ? d.ref
-                        : typeof d.p99 === 'number' ? d.p99
-                        : null;
-                    const deviation = typeof d.deviation_score === 'number' ? d.deviation_score : null;
-                    const direction = typeof deviation === 'number'
-                        ? (deviation > 0 ? '↑' : (deviation < 0 ? '↓' : '→'))
-                        : null;
+                    
+                    // Prefer baseline_value (training mean), fallback to reference (p95)
+                    const baseline = typeof d.baseline_value === 'number' ? d.baseline_value
+                        : (typeof d.reference === 'number' ? d.reference
+                        : (typeof d.ref === 'number' ? d.ref
+                        : (typeof d.p99 === 'number' ? d.p99 : null)));
+                    
+                    const deviation = typeof d.deviation === 'number' ? d.deviation
+                        : (typeof d.deviation_score === 'number' ? d.deviation_score : null);
+                    
+                    // Direction: "high" | "low" | "neutral" or derive from deviation
+                    let direction = d.direction;
+                    if (!direction && typeof deviation === 'number') {
+                        if (Math.abs(deviation) >= 2.0) {
+                            direction = deviation > 0 ? 'high' : 'low';
+                        } else {
+                            direction = 'neutral';
+                        }
+                    }
+                    
+                    // Map direction to arrow symbol
+                    const directionSymbol = direction === 'high' ? '↑' 
+                        : (direction === 'low' ? '↓' 
+                        : (direction === 'neutral' ? '→' : ''));
+                    
                     const severity = typeof d.severity === 'string' ? d.severity : null;
+                    const explanation = getFeatureExplanation(feature);
 
-                    return { feature, current, ref, deviation, direction, severity };
+                    return { feature, current, baseline, deviation, direction, directionSymbol, severity, explanation };
                 })
                 .filter(r => r !== null);
 
@@ -150,21 +238,31 @@
                             <tr>
                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Feature</th>
                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Direction</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Current</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Severity</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Current Value</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Baseline (Normal)</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Deviation</th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
-                            ${rows.map(r => `
+                            ${rows.map(r => {
+                                const tooltipText = `${r.explanation.what}. ${r.explanation.why}`;
+                                return `
                                 <tr>
-                                    <td class="px-4 py-2 text-sm text-gray-900 font-medium">${r.feature}</td>
-                                    <td class="px-4 py-2 text-sm text-gray-700">${r.direction || ''}</td>
+                                    <td class="px-4 py-2 text-sm text-gray-900 font-medium">
+                                        <span class="cursor-help underline decoration-dotted" title="${tooltipText.replace(/"/g, '&quot;')}">${r.feature}</span>
+                                    </td>
+                                    <td class="px-4 py-2 text-sm text-gray-700">
+                                        <span class="inline-flex items-center">
+                                            ${r.directionSymbol || ''}
+                                            <span class="ml-1 text-xs">${r.direction === 'high' ? 'abnormal high' : (r.direction === 'low' ? 'abnormal low' : 'neutral')}</span>
+                                        </span>
+                                    </td>
                                     <td class="px-4 py-2 text-sm text-gray-700 font-mono">${typeof r.current === 'number' ? r.current.toFixed(4) : ''}</td>
-                                    <td class="px-4 py-2 text-sm text-gray-700 font-mono">${typeof r.ref === 'number' ? r.ref.toFixed(4) : ''}</td>
-                                    <td class="px-4 py-2 text-sm text-gray-700">${r.severity || ''}</td>
+                                    <td class="px-4 py-2 text-sm text-gray-700 font-mono">${typeof r.baseline === 'number' ? r.baseline.toFixed(4) : ''}</td>
+                                    <td class="px-4 py-2 text-sm text-gray-700 font-mono">${typeof r.deviation === 'number' ? r.deviation.toFixed(4) : ''}</td>
                                 </tr>
-                            `).join('')}
+                            `;
+                            }).join('')}
                         </tbody>
                     </table>
                 </div>
@@ -215,7 +313,11 @@
 
                     if (badge) badge.innerHTML = renderRiskBadge(risk);
 
-                    const deviationsHtml = renderDeviationsTable(result.deviations);
+                    // Use feature_explanations if available, otherwise fallback to deviations
+                    const featureExplanations = Array.isArray(result.feature_explanations) && result.feature_explanations.length > 0
+                        ? result.feature_explanations
+                        : (Array.isArray(result.deviations) ? result.deviations : []);
+                    const deviationsHtml = renderDeviationsTable(featureExplanations);
 
                     if (ewContent) {
                         ewContent.innerHTML = `
@@ -260,7 +362,10 @@
 
                             ${deviationsHtml ? `
                             <div class="p-4 bg-gray-50 border border-gray-200 rounded">
-                                <div class="font-semibold mb-2">Top Feature Deviations</div>
+                                <div class="font-semibold mb-2">Why is this window anomalous?</div>
+                                <div class="text-sm text-gray-600 mb-3">
+                                    This explains the latest inference window only. OTA enforcement uses rolling history, not this view.
+                                </div>
                                 ${deviationsHtml}
                             </div>
                             ` : ''}
